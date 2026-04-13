@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import safetensors
+import torch
 
 from vllm.config import VllmConfig
 from vllm.distributed.ec_transfer.ec_connector.base import (
@@ -84,13 +85,19 @@ class ECExampleConnector(ECConnectorBase):
                 "In connector.start_load_caches, but the connector metadata is None"
             )
             return
+        device_type = current_platform.device_type
+        device_module = getattr(torch, device_type, None)
+        if device_module is not None and hasattr(device_module, "current_device"):
+            target_device = f"{device_type}:{device_module.current_device()}"
+        else:
+            target_device = device_type
         # Load the EC for each mm data
         for mm_data in metadata.mm_datas:
             if mm_data.mm_hash in encoder_cache:
                 continue
             filename = self._generate_filename_debug(mm_data.mm_hash)
             ec_cache = safetensors.torch.load_file(
-                filename, device=current_platform.device_type
+                filename, device=target_device
             )["ec_cache"]
             encoder_cache[mm_data.mm_hash] = ec_cache
             logger.debug("Success load encoder cache for hash %s", mm_data.mm_hash)
