@@ -148,3 +148,20 @@ def test_multiple_tool_calls_materialised(num_tool_calls: int):
     # Verify after model_dump_json too
     _ = req.model_dump_json()
     assert len(assistant_msg.get("tool_calls", [])) == num_tool_calls
+
+
+def test_tool_call_arguments_object_is_serialized():
+    tool_call = {
+        "id": "call_abc123",
+        "type": "function",
+        "function": {"name": "get_weather", "arguments": {"city": "Paris"}},
+    }
+    req = _make_request(
+        [
+            {"role": "user", "content": "What is the weather in Paris?"},
+            {"role": "assistant", "content": None, "tool_calls": [tool_call]},
+        ]
+    )
+
+    tool_calls = list(req.messages[1]["tool_calls"])
+    assert tool_calls[0]["function"]["arguments"] == '{"city": "Paris"}'
