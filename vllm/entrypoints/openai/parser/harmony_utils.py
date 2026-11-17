@@ -363,7 +363,22 @@ def parse_chat_inputs_to_harmony_messages(chat_msgs: list) -> list[Message]:
                 "name"
             )
 
+    # A tool result without a known `tool_call_id` answers the earliest
+    # unanswered call of the preceding assistant turn.
+    unanswered: list[tuple[str | None, str]] = []
     for chat_msg in chat_msgs:
+        role = chat_msg.get("role")
+        if role == "assistant" and chat_msg.get("tool_calls"):
+            unanswered = [
+                (tool_call.get("id"), tool_call.get("function", {}).get("name"))
+                for tool_call in chat_msg["tool_calls"]
+            ]
+        elif role == "tool":
+            tool_call_id = chat_msg.get("tool_call_id")
+            if tool_call_id in tool_id_names:
+                unanswered = [c for c in unanswered if c[0] != tool_call_id]
+            elif not chat_msg.get("name") and unanswered:
+                chat_msg = {**chat_msg, "name": unanswered.pop(0)[1]}
         msgs.extend(parse_chat_input_to_harmony_message(chat_msg, tool_id_names))
 
     return msgs
@@ -539,7 +554,7 @@ def parse_chat_input_to_harmony_message(
     # Tool role message (tool output)
     if role == "tool":
         tool_call_id = chat_msg.get("tool_call_id", "")
-        name = tool_id_names.get(tool_call_id, "")
+        name = tool_id_names.get(tool_call_id) or chat_msg.get("name") or ""
         content = flatten_input_text_content(chat_msg.get("content")) or ""
 
         msg = (

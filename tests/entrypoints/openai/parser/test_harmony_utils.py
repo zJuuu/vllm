@@ -19,6 +19,7 @@ from vllm.entrypoints.openai.parser.harmony_utils import (
     has_custom_tools,
     is_function_recipient,
     parse_chat_input_to_harmony_message,
+    parse_chat_inputs_to_harmony_messages,
 )
 from vllm.entrypoints.openai.responses.harmony import (
     response_input_to_harmony,
@@ -903,6 +904,36 @@ class TestParseChatInputToHarmonyMessage:
                 },
             ],
         )
+
+    def test_tool_messages_without_tool_call_id(self):
+        def call(call_id, name):
+            return {
+                "id": call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": "{}"},
+            }
+
+        messages = parse_chat_inputs_to_harmony_messages(
+            [
+                {"role": "user", "content": "Weather and time in Paris?"},
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        call("call_1", "get_weather"),
+                        call("call_2", "get_time"),
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_2", "content": "10:00"},
+                {"role": "tool", "content": "18C"},
+                {"role": "tool", "name": "get_weather", "content": "19C"},
+            ]
+        )
+
+        assert [m.author.name for m in messages if m.author.role == "tool"] == [
+            "functions.get_time",
+            "functions.get_weather",
+            "functions.get_weather",
+        ]
 
     def test_tool_message_with_array_content(self):
         tool_id_names = {
