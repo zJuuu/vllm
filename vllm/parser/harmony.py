@@ -440,7 +440,10 @@ class HarmonyParser(DelegatingParser):
     def adjust_request(
         self, request: ChatCompletionRequest | ResponsesRequest
     ) -> ChatCompletionRequest | ResponsesRequest:
-        request = _adjust_output_format(request)
+        strict_level = self.tool_strict_level
+        if strict_level is None and self._tool_parser is not None:
+            strict_level = self._tool_parser.default_tool_strict_level
+        request = _adjust_output_format(request, strict_level)
         return super().adjust_request(request)
 
     @staticmethod
@@ -574,6 +577,7 @@ def get_harmony_structural_tag(
 
 def _adjust_output_format(
     request: ChatCompletionRequest | ResponsesRequest,
+    strict_level: ToolStrictLevel | None,
 ) -> ChatCompletionRequest | ResponsesRequest:
     """Canonicalize request constraints into a reasoning-aware StructuralTag."""
     params = request.extract_structured_outputs()
@@ -628,11 +632,14 @@ def _adjust_output_format(
             reasoning=True,
             strict_level=ToolStrictLevel.FUNCTION,
         )
-        if request.tools and request.tool_choice == "auto"
+        if request.tools
+        and request.tool_choice == "auto"
+        and strict_level in (None, ToolStrictLevel.AUTO)
         else None
     )
     if tool_calls is not None:
         # The response format applies to the answer; tools stay callable.
+        # Above AUTO, `_apply_structural_tag` adds the tool calls instead.
         # The last element of the Harmony tag holds the tool call tags.
         content = OrFormat(elements=[content, tool_calls.format.elements[-1]])
     structural_tag = _assemble_tag(

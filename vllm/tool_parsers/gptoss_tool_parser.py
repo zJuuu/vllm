@@ -9,6 +9,7 @@ from vllm.entrypoints.generate.base.protocol import (
     ExtractedToolCallInformation,
 )
 from vllm.tool_parsers.abstract_tool_parser import Tool, ToolParser
+from vllm.tool_parsers.tool_strict_level import ToolStrictLevel
 
 if TYPE_CHECKING:
     from vllm.tokenizers import TokenizerLike
@@ -22,6 +23,10 @@ class GptOssToolParser(ToolParser):
     """
 
     structural_tag_model = "harmony"
+    # GPT-OSS often breaks argument schemas it can't see in the rendered tool
+    # signature, and closes nested JSON unevenly; without a grammar, calls to
+    # nested agent tools come back unparsable or schema-violating.
+    default_tool_strict_level = ToolStrictLevel.PARAMETER
 
     def __init__(self, tokenizer: "TokenizerLike", tools: list[Tool] | None = None):
         super().__init__(tokenizer, tools)

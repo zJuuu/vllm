@@ -1509,3 +1509,27 @@ class TestAdjustRequest:
             xgrammar_backend,
             gpt_oss_stop_token_ids,
         )
+
+    def test_auto_constrains_arguments_by_default(
+        self, harmony_parser, xgrammar_backend, gpt_oss_stop_token_ids
+    ):
+        request = self._build_request("chat", tool_choice="auto")
+        adjusted_request = harmony_parser.adjust_request(request)
+        self._assert_structured_outputs_admission(
+            adjusted_request,
+            self.ADMISSION_SAMPLES,
+            xgrammar_backend,
+            gpt_oss_stop_token_ids,
+        )
+
+        grammar = xgrammar_backend.compile_grammar(
+            StructuredOutputOptions.STRUCTURAL_TAG,
+            adjusted_request.structured_outputs.structural_tag,
+            stop_token_ids=gpt_oss_stop_token_ids,
+        )
+        wrong_type = encode_output(
+            self.ANALYSIS
+            + f"<|start|>assistant<|channel|>commentary to=functions.{self.TOOL_2_NAME}"
+            ' <|constrain|>json<|message|>{"city": 1}<|call|>'
+        )
+        assert grammar.validate_tokens(wrong_type) != wrong_type
