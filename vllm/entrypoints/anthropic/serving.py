@@ -949,12 +949,33 @@ class AnthropicServingMessages(OpenAIServingChat):
             ec_transfer_params=generator.ec_transfer_params,
         )
         choice = generator.choices[0]
+        tool_uses: list[AnthropicContentBlock] = []
+        for tool_call in choice.message.tool_calls:
+            try:
+                tool_input = json.loads(tool_call.function.arguments)
+            except json.JSONDecodeError:
+                # A cut-off or malformed call can't become a `tool_use` block.
+                logger.warning(
+                    "Dropping tool call %s with arguments that are not JSON",
+                    tool_call.function.name,
+                )
+                continue
+            tool_uses.append(
+                AnthropicContentBlock(
+                    type="tool_use",
+                    id=tool_call.id,
+                    name=tool_call.function.name,
+                    input=tool_input,
+                )
+            )
+        finish_reason = choice.finish_reason
+        if finish_reason == "tool_calls" and not tool_uses:
+            finish_reason = "stop"
         result.stop_reason, result.stop_sequence = _to_anthropic_stop_reason(
-            choice.finish_reason,
+            finish_reason,
             choice.stop_reason,
-            tool_used=bool(choice.message.tool_calls),
-            # Their arguments are json-decoded below, so parsed calls are complete.
-            tool_complete=bool(choice.message.tool_calls),
+            tool_used=bool(tool_uses),
+            tool_complete=bool(tool_uses),
         )
 
         content: list[AnthropicContentBlock] = []
@@ -974,14 +995,7 @@ class AnthropicServingMessages(OpenAIServingChat):
                 )
             )
 
-        for tool_call in choice.message.tool_calls:
-            anthropic_tool_call = AnthropicContentBlock(
-                type="tool_use",
-                id=tool_call.id,
-                name=tool_call.function.name,
-                input=json.loads(tool_call.function.arguments),
-            )
-            content += [anthropic_tool_call]
+        content += tool_uses
 
         # Anthropic's canonical shape for an empty completion is a single
         # empty text block, not []. Some strict clients assume content[0]

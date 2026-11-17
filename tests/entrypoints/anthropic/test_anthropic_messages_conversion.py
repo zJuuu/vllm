@@ -1645,6 +1645,46 @@ class TestMessagesFullConverter:
         assert result.content[0].type == "text"
         assert result.content[0].text == ""
 
+    @pytest.mark.parametrize(
+        ("arguments", "finish_reason", "expected"),
+        [
+            (['{"city": "Par'], "length", "max_tokens"),
+            (['{"city": "Paris"'], "tool_calls", "end_turn"),
+            (['{"city": "Paris"', '{"city": "Rome"}'], "tool_calls", "tool_use"),
+        ],
+    )
+    def test_tool_call_arguments_not_json(self, arguments, finish_reason, expected):
+        generator = ChatCompletionResponse(
+            id="chatcmpl-tool",
+            model="test-model",
+            choices=[
+                ChatCompletionResponseChoice(
+                    index=0,
+                    message=ChatMessage(
+                        role="assistant",
+                        tool_calls=[
+                            ToolCall(
+                                function=FunctionCall(
+                                    name="get_weather", arguments=args
+                                )
+                            )
+                            for args in arguments
+                        ],
+                    ),
+                    finish_reason=finish_reason,
+                )
+            ],
+            usage=UsageInfo(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+        )
+
+        result = _make_full_converter().messages_full_converter(generator)
+
+        assert result.stop_reason == expected
+        tool_uses = [block for block in result.content if block.type == "tool_use"]
+        assert [block.input for block in tool_uses] == [
+            json.loads(args) for args in arguments[1:]
+        ]
+
 
 class TestZeroTokenPrewarm:
     @pytest.mark.parametrize("stream", [False, True])
