@@ -3,6 +3,7 @@
 
 # Adapted from
 # https://github.com/lm-sys/FastChat/blob/168ccc29d3f7edc50823016105c024fe2282732a/fastchat/protocol/openai_api_protocol.py
+import json
 import time
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal
 
@@ -582,9 +583,11 @@ class ChatCompletionRequest(OpenAIBaseModel):
     def _normalize_messages_before(cls, data: Any) -> Any:
         """Pre-process message dicts before Pydantic field validation.
 
-        Performs two normalizations in a single pass:
+        Performs three normalizations in a single pass:
         - Converts tool_calls generators/iterators to lists so one-shot
           generators are not consumed during union type matching.
+        - Serializes tool call `arguments` sent as a JSON object, which
+          some clients do although the API defines a string.
         - Renames the deprecated `reasoning_content` field to
           `reasoning` so downstream code only needs to check one field.
         """
@@ -598,7 +601,15 @@ class ChatCompletionRequest(OpenAIBaseModel):
                 continue
             tool_calls = msg.get("tool_calls")
             if tool_calls is not None and not isinstance(tool_calls, list):
-                msg["tool_calls"] = list(tool_calls)
+                msg["tool_calls"] = tool_calls = list(tool_calls)
+            for tool_call in tool_calls or []:
+                function = (
+                    tool_call.get("function") if isinstance(tool_call, dict) else None
+                )
+                if isinstance(function, dict) and isinstance(
+                    function.get("arguments"), dict
+                ):
+                    function["arguments"] = json.dumps(function["arguments"])
             reasoning_content = msg.pop("reasoning_content", None)
             if reasoning_content is not None and msg.get("reasoning") is None:
                 msg["reasoning"] = reasoning_content
