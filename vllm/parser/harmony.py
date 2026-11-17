@@ -7,9 +7,9 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from enum import Enum, auto
-from typing import TYPE_CHECKING, NamedTuple
+from typing import NamedTuple
 
-from openai_harmony import HarmonyError, Message, Role
+from openai_harmony import HarmonyError, Message, Role, StreamableParser
 from xgrammar import StructuralTag
 from xgrammar.openai_tool_call_schema import BuiltinToolParam, FunctionToolParam
 from xgrammar.structural_tag import (
@@ -49,10 +49,6 @@ from vllm.tool_parsers.structural_tag_registry import (
     get_function_parameters,
     register_vllm_structural_tag,
 )
-
-if TYPE_CHECKING:
-    from openai_harmony import Message, StreamableParser
-
 
 logger = init_logger(__name__)
 
@@ -139,24 +135,32 @@ class HarmonyParser(DelegatingParser):
             self._harmony_parser.process_eos()
             msg = self._poll_completed_message()
         except HarmonyError:
-            logger.warning(
-                "Harmony parser ended in a non-terminal state; returning the "
-                "recovered raw output."
-            )
-
-            final_channel = "final"
-            text = self.model_tokenizer.decode(self._current_message_tokens)
-            segments.append(
-                Segment(
-                    channel=final_channel,
-                    recipient=None,
-                    delta=text,
-                    completed_message=None,
+            msg = None
+            encoding = get_encoding()
+            # A Harmony header cut off by max_tokens or a stop string carries
+            # control tokens and no content; only plain text is recovered.
+            if not any(
+                encoding.is_special_token(token_id)
+                for token_id in self._current_message_tokens
+            ):
+                logger.warning(
+                    "Harmony parser ended in a non-terminal state; returning the "
+                    "recovered raw output."
                 )
-            )
-            msg = Message.from_role_and_content(Role.ASSISTANT, text).with_channel(
-                final_channel
-            )
+
+                final_channel = "final"
+                text = self.model_tokenizer.decode(self._current_message_tokens)
+                segments.append(
+                    Segment(
+                        channel=final_channel,
+                        recipient=None,
+                        delta=text,
+                        completed_message=None,
+                    )
+                )
+                msg = Message.from_role_and_content(Role.ASSISTANT, text).with_channel(
+                    final_channel
+                )
 
         # Reset to the initial assistant-parser state for the next turn.
         self._parser = None
@@ -337,8 +341,9 @@ class HarmonyParser(DelegatingParser):
         for token_id in token_ids:
             try:
                 self._harmony_parser.process(token_id)
-            except HarmonyError:
-                continue
+            except HarmonyError as e:
+                if not self._resync_after_error(e, token_id):
+                    continue
             channel = self._harmony_parser.current_channel
             recipient = self._normalize_recipient(
                 self._harmony_parser.current_recipient
@@ -371,6 +376,37 @@ class HarmonyParser(DelegatingParser):
             segments=segments,
             reasoning_token_count=reasoning_token_count,
         )
+
+    def _resync_after_error(self, error: HarmonyError, token_id: int) -> bool:
+        """Drop a malformed message and resume at the last `<|start|>` it holds.
+
+        A malformed header keeps absorbing tokens, including the `<|start|>`
+        and header of a well-formed message that follows it, until
+        `<|message|>` fails to parse. Without a restart from that `<|start|>`
+        the following tool call or answer would be dropped as well.
+
+        Returns whether `token_id` was consumed by the restarted parser.
+        """
+        tokens = [*self._current_message_tokens, token_id]
+        self._current_message_tokens.clear()
+        if len(tokens) == 1:
+            return False
+        logger.warning("Skipping malformed Harmony message: %s", error)
+
+        start = get_encoding().encode("<|start|>", allowed_special="all")[0]
+        if start not in tokens:
+            return False
+        restart = len(tokens) - 1 - tokens[::-1].index(start)
+        self._parser = StreamableParser(get_encoding(), role=None)
+        self._num_processed_messages = 0
+        try:
+            for token in tokens[restart:]:
+                self._parser.process(token)
+        except HarmonyError:
+            self._parser = StreamableParser(get_encoding(), role=None)
+            return False
+        self._current_message_tokens.extend(tokens[restart:-1])
+        return True
 
     def count_reasoning_tokens(self, token_ids: Sequence[int]) -> int:
         if len(token_ids) == self._num_counted_tokens:

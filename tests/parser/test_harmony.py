@@ -85,6 +85,30 @@ def malformed_msgs_str() -> list[str]:
     ]
 
 
+MALFORMED_HEADER_THEN_TOOL_CALL = [
+    (
+        (
+            "<|channel|>analysis<|message|>Search for a hub.<|end|>"
+            "<|start|>assistant to=functions.add_to_cart?commentary?"
+            "<|constrain|>??}}<|end|>"
+            "<|start|>assistant<|channel|>commentary to=functions.search_catalog "
+            '<|constrain|>json<|message|>{"query": "hub"}<|call|>'
+        ),
+        "search_catalog",
+        '{"query": "hub"}',
+    ),
+    (
+        (
+            " to=??1 (??) The assistant needs to add the mouse.<|end|>"
+            "<|start|>assistant<|channel|>commentary to=functions.add_to_cart"
+            '<|constrain|>json<|message|>{"sku": "MS-3", "qty": 1}<|call|>'
+        ),
+        "add_to_cart",
+        '{"sku": "MS-3", "qty": 1}',
+    ),
+]
+
+
 def encode_output(harmony_str: str) -> list[int]:
     return get_encoding().encode(harmony_str, allowed_special="all")
 
@@ -200,19 +224,18 @@ class TestFlush:
             chunk = harmony_parser.process_chunk(encode_output(msg_str))
             assert "".join(segment.delta for segment in chunk.segments) == "thinking"
 
-        last_msg_str = malformed_msgs_str[-1]
-        harmony_parser.process_chunk(encode_output(last_msg_str))
+        # The malformed header holds Harmony control tokens: not returned as text.
+        harmony_parser.process_chunk(encode_output(malformed_msgs_str[-1]))
+        assert harmony_parser.flush() == []
+        assert_parser_is_reset(harmony_parser)
+
+    def test_flush_recovers_plain_text(self, harmony_parser):
+        harmony_parser.process_chunk(encode_output("Hello"))
         flushed_segments = harmony_parser.flush()
         assert len(flushed_segments) == 2
-        delta_segment = flushed_segments[0]
-        message_segment = flushed_segments[1]
-
-        assert delta_segment.channel == "final"
-        assert delta_segment.recipient is None
-        assert delta_segment.delta == last_msg_str
-        assert message_segment.channel == "final"
-        assert message_segment.recipient is None
-        assert get_text(message_segment.completed_message) == last_msg_str
+        assert flushed_segments[0].channel == "final"
+        assert flushed_segments[0].delta == "Hello"
+        assert get_text(flushed_segments[1].completed_message) == "Hello"
         assert_parser_is_reset(harmony_parser)
 
 
@@ -452,8 +475,49 @@ class TestParse:
         )
 
         assert reasoning == "thinking"
-        assert content == "thinking\n" + malformed_msgs_str[-1]
+        assert content == "thinking"
         assert tool_calls is None
+        assert_parser_is_reset(harmony_parser)
+
+    @pytest.mark.parametrize(
+        "max_tokens_cut",
+        [
+            "<|start|>assistant",
+            "<|start|>assistant<|channel|>commentary to=functions.get_weather",
+            (
+                "<|start|>assistant<|channel|>commentary to=functions.get_weather "
+                "<|constrain|>js"
+            ),
+        ],
+    )
+    def test_truncated_header_is_not_content(
+        self, harmony_parser, chat_request, max_tokens_cut
+    ):
+        reasoning, content, tool_calls = harmony_parser.parse(
+            "",
+            chat_request,
+            model_output_token_ids=encode_output(
+                "<|channel|>analysis<|message|>Need weather.<|end|>" + max_tokens_cut
+            ),
+        )
+
+        assert reasoning == "Need weather."
+        assert content is None
+        assert tool_calls is None
+        assert_parser_is_reset(harmony_parser)
+
+    @pytest.mark.parametrize(
+        ("output", "name", "arguments"), MALFORMED_HEADER_THEN_TOOL_CALL
+    )
+    def test_tool_call_after_malformed_header(
+        self, harmony_parser, chat_request, output, name, arguments
+    ):
+        _, content, tool_calls = harmony_parser.parse(
+            "", chat_request, model_output_token_ids=encode_output(output)
+        )
+
+        assert content is None
+        assert tool_call_tuples(tool_calls) == [(name, arguments)]
         assert_parser_is_reset(harmony_parser)
 
     @pytest.mark.parametrize(
@@ -575,10 +639,33 @@ class TestParseDelta:
             finished=True,
         )
 
-        assert last_delta is not None
-        assert last_delta.content == malformed_msgs_str[-1]
-        assert last_delta.reasoning is None
-        assert not last_delta.tool_calls
+        assert last_delta is None
+        assert_parser_is_reset(parser)
+
+    @pytest.mark.parametrize(
+        ("output", "name", "arguments"), MALFORMED_HEADER_THEN_TOOL_CALL
+    )
+    def test_tool_call_after_malformed_header(
+        self, gpt_oss_tokenizer, chat_request, output, name, arguments
+    ):
+        parser = HarmonyParser(gpt_oss_tokenizer)
+        entries = []
+        content = ""
+        token_ids = encode_output(output)
+        for i, token_id in enumerate(token_ids):
+            delta = parser.parse_delta(
+                delta_text="",
+                delta_token_ids=[token_id],
+                request=chat_request,
+                finished=i == len(token_ids) - 1,
+            )
+            entries += tool_call_entries(delta)
+            content += (delta.content or "") if delta else ""
+
+        assert content == ""
+        assert entries[0][:2] == (0, name)
+        assert {index for index, _, _ in entries} == {0}
+        assert "".join(args or "" for _, _, args in entries) == arguments
         assert_parser_is_reset(parser)
 
     @pytest.mark.parametrize("tool_channel", ["commentary", "analysis"])
