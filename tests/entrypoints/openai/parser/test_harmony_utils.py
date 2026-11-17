@@ -6,11 +6,15 @@ from openai.types.responses import FunctionTool
 from openai_harmony import DeveloperContent, Message, Role
 
 from tests.entrypoints.openai.utils import verify_harmony_messages
-from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionToolsParam
+from vllm.entrypoints.openai.chat_completion.protocol import (
+    ChatCompletionRequest,
+    ChatCompletionToolsParam,
+)
 from vllm.entrypoints.openai.parser.harmony_utils import (
     auto_drop_analysis_messages,
     create_tool_definition,
     extract_function_from_recipient,
+    forbids_tool_calls,
     get_system_message,
     has_custom_tools,
     is_function_recipient,
@@ -208,6 +212,42 @@ class TestToolParametersForHarmony:
         parameters = {"properties": {"version": {"const": "v2"}}}
         _rendered_parameters(parameters)
         assert parameters == {"properties": {"version": {"const": "v2"}}}
+
+
+class TestForbidsToolCalls:
+    TOOLS = [{"type": "function", "function": {"name": "f", "parameters": {}}}]
+    TOOL_HISTORY = [
+        {"role": "user", "content": "Weather in Paris and Rome?"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "f", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "18C"},
+    ]
+
+    @pytest.mark.parametrize(
+        ("kwargs", "expected"),
+        [
+            ({"tools": TOOLS, "tool_choice": "none"}, True),
+            ({"tools": TOOLS, "tool_choice": "auto"}, False),
+            ({"tools": TOOLS}, False),
+            ({}, False),
+            ({"messages": TOOL_HISTORY}, True),
+            ({"messages": TOOL_HISTORY, "tools": TOOLS}, False),
+        ],
+    )
+    def test_chat(self, kwargs, expected):
+        request = ChatCompletionRequest(
+            model="m",
+            **{"messages": [{"role": "user", "content": "hi"}], **kwargs},
+        )
+        assert forbids_tool_calls(request) is expected
 
 
 class TestIsFunctionRecipient:

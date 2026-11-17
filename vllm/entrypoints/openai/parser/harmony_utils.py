@@ -4,7 +4,7 @@
 import datetime
 import json
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openai.types.responses.tool import Tool
 from openai_harmony import (
@@ -24,9 +24,15 @@ from openai_harmony import (
 )
 
 from vllm import envs
-from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionToolsParam
+from vllm.entrypoints.openai.chat_completion.protocol import (
+    ChatCompletionRequest,
+    ChatCompletionToolsParam,
+)
 from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
+
+if TYPE_CHECKING:
+    from vllm.entrypoints.openai.responses.protocol import ResponsesRequest
 
 logger = init_logger(__name__)
 
@@ -100,6 +106,30 @@ def get_encoding():
     if _harmony_encoding is None:
         _harmony_encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
     return _harmony_encoding
+
+
+# Without it GPT-OSS answers a request it can't complete with invented tool
+# results or a call written out as text.
+NO_TOOL_CALL_INSTRUCTIONS = (
+    "Tools cannot be called for this reply. Answer only from the information "
+    "already in the conversation, and say plainly what you could not look up."
+)
+
+
+def forbids_tool_calls(request: "ChatCompletionRequest | ResponsesRequest") -> bool:
+    """Whether no tool call may be returned for `request`.
+
+    That is `tool_choice="none"` with tools, or a chat request without tools
+    whose history holds tool calls or results.
+    """
+    if request.tools:
+        return request.tool_choice == "none"
+    if not isinstance(request, ChatCompletionRequest):
+        return False
+    return any(
+        message.get("role") == "tool" or message.get("tool_calls")
+        for message in request.messages
+    )
 
 
 def get_system_message(

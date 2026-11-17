@@ -22,8 +22,10 @@ from vllm.entrypoints.openai.completion.protocol import (
 )
 from vllm.entrypoints.openai.parser.harmony_utils import (
     BUILTIN_TOOL_TO_MCP_SERVER_LABEL,
+    NO_TOOL_CALL_INSTRUCTIONS,
     build_harmony_preamble,
     extract_instructions_from_messages,
+    forbids_tool_calls,
     get_user_message,
     has_custom_tools,
     parse_chat_inputs_to_harmony_messages,
@@ -595,6 +597,10 @@ class OnlineRenderer:
                 parameter="reasoning_effort",
             )
         tools = request.tools if should_include_tools else None
+        if forbids_tool_calls(request):
+            instructions = "\n\n".join(
+                filter(None, [instructions, NO_TOOL_CALL_INSTRUCTIONS])
+            )
         messages.extend(
             build_harmony_preamble(
                 instructions=instructions,

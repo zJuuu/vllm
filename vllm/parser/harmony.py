@@ -34,6 +34,7 @@ from vllm.entrypoints.openai.chat_completion.protocol import (
 )
 from vllm.entrypoints.openai.parser.harmony_utils import (
     extract_function_from_recipient,
+    forbids_tool_calls,
     get_encoding,
     get_streamable_parser_for_assistant,
     is_function_recipient,
@@ -43,12 +44,15 @@ from vllm.logger import init_logger
 from vllm.parser.abstract_parser import DelegatingParser, structured_outputs_to_format
 from vllm.reasoning.gptoss_reasoning_parser import GptOssReasoningParser
 from vllm.renderers.chat_utils import make_tool_call_id
+from vllm.sampling_params import StructuredOutputsParams
 from vllm.tool_parsers.gptoss_tool_parser import GptOssToolParser
 from vllm.tool_parsers.structural_tag_registry import (
     SimplifiedToolChoice,
     get_function_parameters,
+    get_model_structural_tag,
     register_vllm_structural_tag,
 )
+from vllm.tool_parsers.tool_strict_level import ToolStrictLevel
 
 logger = init_logger(__name__)
 
@@ -574,6 +578,27 @@ def _adjust_output_format(
     """Canonicalize request constraints into a reasoning-aware StructuralTag."""
     params = request.extract_structured_outputs()
     if params is None:
+        if not forbids_tool_calls(request):
+            return request
+        # GPT-OSS still calls a tool it needs, and the call would be dropped,
+        # leaving an empty reply. Only allow an answer.
+        structural_tag = _assemble_tag(
+            allow_analysis=True,
+            allow_commentary=True,
+            content=OrFormat(
+                elements=[
+                    TagFormat(
+                        begin=_FINAL_BEGIN.format(constrain=constrain),
+                        content=_ANY_CONTENT,
+                        end=_END_TAG,
+                    )
+                    for constrain in _JSON_CONSTRAINS + [""]
+                ]
+            ),
+        )
+        request.structured_outputs = StructuredOutputsParams(
+            structural_tag=json.dumps(structural_tag.model_dump())
+        )
         return request
 
     final_content = structured_outputs_to_format(params)
@@ -595,8 +620,23 @@ def _adjust_output_format(
         content = TagFormat(
             begin=_FINAL_BEGIN.format(constrain=""), content=final_content, end=_END_TAG
         )
+    tool_calls = (
+        get_model_structural_tag(
+            GptOssToolParser.structural_tag_model,
+            request.tools,
+            "required",
+            reasoning=True,
+            strict_level=ToolStrictLevel.FUNCTION,
+        )
+        if request.tools and request.tool_choice == "auto"
+        else None
+    )
+    if tool_calls is not None:
+        # The response format applies to the answer; tools stay callable.
+        # The last element of the Harmony tag holds the tool call tags.
+        content = OrFormat(elements=[content, tool_calls.format.elements[-1]])
     structural_tag = _assemble_tag(
-        allow_analysis=True, allow_commentary=False, content=content
+        allow_analysis=True, allow_commentary=tool_calls is not None, content=content
     )
 
     request.structured_outputs = replace(

@@ -1314,6 +1314,30 @@ class TestAdjustRequest:
                 ],
             ),
             (
+                {"tool_choice": "auto", "response_format_type": "json_schema"},
+                [
+                    "COMMENTARY",
+                    "TOOL_CALL_1_CHANNEL_FIRST",
+                    "TOOL_CALL_1_FUNCTION_FIRST",
+                    "TOOL_CALL_2_CHANNEL_FIRST",
+                    "TOOL_CALL_2_FUNCTION_FIRST",
+                    "FINAL_JSON_SCHEMA",
+                ],
+            ),
+            (
+                {},
+                [
+                    "COMMENTARY",
+                    "FINAL_JSON_SCHEMA",
+                    "FINAL_JSON_OBJECT",
+                    "FINAL_TEXT_ONLY",
+                    "FINAL_REGEX",
+                    "FINAL_CHOICE",
+                    "FINAL_GRAMMAR",
+                    "FINAL_STRUCTURAL_TAG",
+                ],
+            ),
+            (
                 {"response_format_type": "json_schema"},
                 ["FINAL_JSON_SCHEMA"],
             ),
@@ -1399,6 +1423,8 @@ class TestAdjustRequest:
             "tool_required",
             "tool_named",
             "pr56086_tool_auto_strict_response_format_json_schema",
+            "tool_auto_response_format_json_schema",
+            "tool_none",
             "response_format_json_schema",
             "response_format_json_object",
             "structured_outputs_json",
@@ -1425,6 +1451,61 @@ class TestAdjustRequest:
         self._assert_structured_outputs_admission(
             adjusted_request,
             expected_admission,
+            xgrammar_backend,
+            gpt_oss_stop_token_ids,
+        )
+
+    @pytest.mark.parametrize(
+        ("history", "constrained"),
+        [
+            ([], False),
+            (
+                [
+                    {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": TOOL_2_NAME, "arguments": "{}"},
+                            }
+                        ],
+                    },
+                    {"role": "tool", "tool_call_id": "call_1", "content": "Sunny"},
+                ],
+                True,
+            ),
+        ],
+        ids=["no_history", "tool_history"],
+    )
+    def test_no_tools_after_tool_history(
+        self,
+        harmony_parser,
+        xgrammar_backend,
+        gpt_oss_stop_token_ids,
+        history,
+        constrained,
+    ):
+        request = ChatCompletionRequest(
+            model=REASONING_MODEL_NAME,
+            messages=[{"role": "user", "content": self.REQUEST_TEXT}, *history],
+        )
+        adjusted_request = harmony_parser.adjust_request(request)
+        if not constrained:
+            assert adjusted_request.structured_outputs is None
+            return
+        self._assert_structured_outputs_admission(
+            adjusted_request,
+            [
+                "COMMENTARY",
+                "FINAL_JSON_SCHEMA",
+                "FINAL_JSON_OBJECT",
+                "FINAL_TEXT_ONLY",
+                "FINAL_REGEX",
+                "FINAL_CHOICE",
+                "FINAL_GRAMMAR",
+                "FINAL_STRUCTURAL_TAG",
+            ],
             xgrammar_backend,
             gpt_oss_stop_token_ids,
         )
