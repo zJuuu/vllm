@@ -75,6 +75,141 @@ class TestCreateToolDefinition:
         assert tool_definition.parameters == _TOOL_PARAMETERS
 
 
+def _rendered_parameters(parameters: dict) -> dict:
+    tool = ChatCompletionToolsParam(
+        function={"name": "f", "description": "d", "parameters": parameters}
+    )
+    return create_tool_definition(tool).parameters
+
+
+class TestToolParametersForHarmony:
+    def test_missing_top_level_type(self):
+        assert _rendered_parameters({"properties": {"ticker": {"type": "string"}}}) == {
+            "type": "object",
+            "properties": {"ticker": {"type": "string"}},
+        }
+
+    def test_refs_are_inlined(self):
+        person = {"type": "object", "properties": {"name": {"type": "string"}}}
+        rendered = _rendered_parameters(
+            {
+                "type": "object",
+                "$defs": {"person": person},
+                "properties": {
+                    "organizer": {"$ref": "#/$defs/person"},
+                    "attendees": {
+                        "type": "array",
+                        "items": {"$ref": "#/$defs/person"},
+                    },
+                },
+            }
+        )
+
+        assert "$defs" not in rendered
+        assert rendered["properties"]["organizer"] == person
+        assert rendered["properties"]["attendees"]["items"] == person
+
+    def test_recursive_ref_is_described(self):
+        rendered = _rendered_parameters(
+            {
+                "type": "object",
+                "definitions": {
+                    "node": {
+                        "type": "object",
+                        "properties": {"child": {"$ref": "#/definitions/node"}},
+                    }
+                },
+                "properties": {"root": {"$ref": "#/definitions/node"}},
+            }
+        )
+
+        child = rendered["properties"]["root"]["properties"]["child"]
+        assert child == {"description": "a node object"}
+
+    def test_const_and_nullable_enum(self):
+        rendered = _rendered_parameters(
+            {
+                "type": "object",
+                "properties": {
+                    "version": {"const": "v2"},
+                    "category": {
+                        "type": ["string", "null"],
+                        "enum": ["books", "toys", None],
+                    },
+                },
+            }
+        )
+
+        assert rendered["properties"]["version"] == {"type": "string", "enum": ["v2"]}
+        assert rendered["properties"]["category"] == {
+            "type": "string",
+            "enum": ["books", "toys"],
+            "description": "or null",
+        }
+
+    def test_constraints_become_description(self):
+        rendered = _rendered_parameters(
+            {
+                "type": "object",
+                "properties": {
+                    "qty": {
+                        "type": "integer",
+                        "description": "How many.",
+                        "minimum": 1,
+                        "maximum": 10,
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "maxItems": 3,
+                    },
+                },
+            }
+        )
+
+        assert (
+            rendered["properties"]["qty"]["description"]
+            == "How many.; integer; minimum: 1; maximum: 10"
+        )
+        assert rendered["properties"]["tags"]["description"] == "maxItems: 3"
+
+    def test_any_of(self):
+        rendered = _rendered_parameters(
+            {
+                "type": "object",
+                "properties": {
+                    "id": {"anyOf": [{"type": "string"}, {"type": "integer"}]},
+                    "target": {
+                        "anyOf": [
+                            {
+                                "type": "object",
+                                "properties": {"user": {"type": "string"}},
+                            },
+                            {
+                                "type": "object",
+                                "properties": {"room": {"type": "string"}},
+                            },
+                        ]
+                    },
+                },
+            }
+        )
+
+        assert rendered["properties"]["id"] == {
+            "type": ["string", "integer"],
+            "description": "integer",
+        }
+        assert rendered["properties"]["target"]["description"] == (
+            'one of: {"type":"object","properties":{"user":{"type":"string"}}}'
+            ' | {"type":"object","properties":{"room":{"type":"string"}}}'
+        )
+
+    def test_request_parameters_are_not_modified(self):
+        parameters = {"properties": {"version": {"const": "v2"}}}
+        _rendered_parameters(parameters)
+        assert parameters == {"properties": {"version": {"const": "v2"}}}
+
+
 class TestIsFunctionRecipient:
     @pytest.mark.parametrize(
         "recipient",

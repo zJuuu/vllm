@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import datetime
+import json
 from collections.abc import Sequence
 from typing import Any
 
@@ -148,17 +149,128 @@ def get_system_message(
     return sys_msg
 
 
+_RENDERED_AS_NOTE = (
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "multipleOf",
+    "minLength",
+    "maxLength",
+    "pattern",
+    "format",
+    "minItems",
+    "maxItems",
+    "uniqueItems",
+)
+
+
+def _schema_for_harmony(
+    schema: Any, defs: dict[str, Any], seen_refs: frozenset[str] = frozenset()
+) -> Any:
+    """Rewrite a JSON schema into what the Harmony TypeScript renderer shows.
+
+    The renderer drops `$ref`, `const`, `anyOf` of objects, enums without a
+    string type, `integer` and every constraint, so GPT-OSS never sees them.
+    Inline local refs, turn `const` and untyped enums into string enums, and
+    move what a TypeScript type can't express into the property comment.
+    """
+    if not isinstance(schema, dict):
+        return schema
+    schema = dict(schema)
+    notes: list[str] = []
+
+    ref = schema.pop("$ref", None)
+    if isinstance(ref, str):
+        name = ref.rsplit("/", 1)[-1]
+        if ref in seen_refs or name not in defs:
+            notes.append(f"a {name} object")
+        else:
+            schema = {**defs[name], **schema}
+            seen_refs = seen_refs | {ref}
+
+    if "const" in schema:
+        schema["enum"] = [schema.pop("const")]
+
+    enum = schema.get("enum")
+    if isinstance(enum, list):
+        values = [v for v in enum if v is not None]
+        if len(values) < len(enum):
+            notes.append("or null")
+        if values and all(isinstance(v, str) for v in values):
+            schema["type"] = "string"
+            schema["enum"] = values
+        else:
+            schema.pop("enum")
+            notes.append("one of " + ", ".join(json.dumps(v) for v in enum))
+
+    for key in ("anyOf", "oneOf"):
+        variants = schema.pop(key, None)
+        if not isinstance(variants, list):
+            continue
+        variants = [_schema_for_harmony(v, defs, seen_refs) for v in variants]
+        types = [v.get("type") for v in variants if isinstance(v, dict)]
+        if len(types) == len(variants) and all(
+            isinstance(t, str) and t not in ("object", "array") for t in types
+        ):
+            schema["type"] = types
+        else:
+            notes.append(
+                "one of: "
+                + " | ".join(json.dumps(v, separators=(",", ":")) for v in variants)
+            )
+
+    schema_type = schema.get("type")
+    if schema_type == "integer" or (
+        isinstance(schema_type, list) and "integer" in schema_type
+    ):
+        notes.append("integer")
+    for key in _RENDERED_AS_NOTE:
+        if key in schema:
+            notes.append(f"{key}: {json.dumps(schema[key])}")
+
+    if isinstance(schema.get("properties"), dict):
+        schema.setdefault("type", "object")
+        schema["properties"] = {
+            name: _schema_for_harmony(prop, defs, seen_refs)
+            for name, prop in schema["properties"].items()
+        }
+    if "items" in schema:
+        schema["items"] = _schema_for_harmony(schema["items"], defs, seen_refs)
+    if isinstance(schema.get("additionalProperties"), dict):
+        value = _schema_for_harmony(schema.pop("additionalProperties"), defs, seen_refs)
+        notes.append(
+            "map of string keys to " + json.dumps(value, separators=(",", ":"))
+        )
+
+    if notes:
+        description = " ".join(str(schema.get("description", "")).split())
+        schema["description"] = "; ".join(filter(None, [description, *notes]))
+    return schema
+
+
+def _parameters_for_harmony(parameters: dict[str, Any] | None) -> Any:
+    if not parameters:
+        return parameters
+    parameters = dict(parameters)
+    defs = {
+        **parameters.pop("definitions", {}),
+        **parameters.pop("$defs", {}),
+    }
+    return _schema_for_harmony(parameters, defs)
+
+
 def create_tool_definition(tool: ChatCompletionToolsParam | Tool):
     if isinstance(tool, ChatCompletionToolsParam):
         return ToolDescription.new(
             name=tool.function.name,
             description=tool.function.description or "",
-            parameters=tool.function.parameters,
+            parameters=_parameters_for_harmony(tool.function.parameters),
         )
     return ToolDescription.new(
         name=tool.name,
         description=tool.description or "",
-        parameters=tool.parameters,
+        parameters=_parameters_for_harmony(tool.parameters),
     )
 
 
