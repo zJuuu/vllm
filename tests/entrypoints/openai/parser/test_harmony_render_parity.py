@@ -20,7 +20,7 @@ Each test:
 """
 
 from openai.types.responses import ResponseFunctionToolCall
-from openai_harmony import Message, Role
+from openai_harmony import Author, Message, Role
 
 from tests.entrypoints.openai.utils import verify_harmony_messages
 from vllm.entrypoints.openai.parser.harmony_utils import (
@@ -49,6 +49,33 @@ def test_render_uses_legacy_tool_call_header():
         "<|start|>assistant to=python<|channel|>commentary code<|message|>" in rendered
     )
     assert "commentary to=python <|constrain|>code" not in rendered
+
+
+def test_render_function_call_and_result_headers():
+    tool_call = (
+        Message.from_role_and_content(Role.ASSISTANT, '{"city": "Paris"}')
+        .with_channel("commentary")
+        .with_recipient("functions.get_weather")
+        .with_content_type("json")
+    )
+    tool_result = (
+        Message.from_author_and_content(
+            Author.new(Role.TOOL, "functions.get_weather"), '{"temp": 18}'
+        )
+        .with_channel("commentary")
+        .with_recipient("assistant")
+    )
+
+    rendered = get_encoding().decode(render_for_completion([tool_call, tool_result]))
+
+    assert (
+        "<|start|>assistant<|channel|>commentary to=functions.get_weather "
+        '<|constrain|>json<|message|>{"city": "Paris"}<|call|>'
+    ) in rendered
+    assert (
+        "<|start|>functions.get_weather to=assistant<|channel|>commentary"
+        '<|message|>{"temp": 18}<|end|>'
+    ) in rendered
 
 
 # Use a fixed date so the system message is deterministic across both paths.

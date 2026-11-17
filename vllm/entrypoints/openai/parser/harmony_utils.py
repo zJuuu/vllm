@@ -455,13 +455,13 @@ def render_for_completion(messages: list[Message]) -> list[int]:
         Role.ASSISTANT,
         config=RenderConversationConfig(auto_drop_analysis=False),
     )
-    return _use_legacy_tool_call_headers(token_ids)
+    return _use_gpt_oss_tool_headers(token_ids)
 
 
-def _use_legacy_tool_call_headers(token_ids: list[int]) -> list[int]:
-    """Keep prior assistant tool calls in the format expected by GPT-OSS.
+def _use_gpt_oss_tool_headers(token_ids: list[int]) -> list[int]:
+    """Keep prior tool headers in the format expected by GPT-OSS.
 
-    oss-harmony 0.0.10 changed a rendered tool-call header from::
+    oss-harmony 0.0.10 changed a rendered built-in tool-call header from::
 
         assistant to=python<|channel|>commentary code
 
@@ -472,6 +472,18 @@ def _use_legacy_tool_call_headers(token_ids: list[int]) -> list[int]:
     GPT-OSS can echo the latter as a malformed header with the recipient in
     both positions. Rewrite only that unambiguous token-level header shape,
     while retaining oss-harmony's embedded vocabulary and parser.
+
+    Function calls keep oss-harmony's header, which is the one GPT-OSS emits
+    itself. In the legacy shape, a few prior calls are enough for most
+    samples to open with a malformed header that fails to parse.
+
+    Tool results are rendered as in the Harmony format documentation::
+
+        functions.get_weather to=assistant<|channel|>commentary
+
+    instead of oss-harmony's::
+
+        functions.get_weather<|channel|>commentary to=assistant
     """
     encoding = get_encoding()
     start = encoding.encode("<|start|>", allowed_special="all")[0]
@@ -489,19 +501,43 @@ def _use_legacy_tool_call_headers(token_ids: list[int]) -> list[int]:
         try:
             header_end = result.index(message, index + 1)
             channel_index = result.index(channel_token, index + 1, header_end)
-            constrain_index = result.index(constrain, channel_index + 1, header_end)
         except ValueError:
             index += 1
             continue
 
         author = encoding.decode(result[index + 1 : channel_index])
+        if author != "assistant":
+            channel_and_recipient = encoding.decode(
+                result[channel_index + 1 : header_end]
+            )
+            if " to=" not in channel_and_recipient:
+                index = header_end + 1
+                continue
+            channel, recipient = channel_and_recipient.split(" to=", 1)
+            tool_result_header = (
+                [start]
+                + encoding.encode(f"{author} to={recipient}")
+                + [channel_token]
+                + encoding.encode(channel)
+                + [message]
+            )
+            result[index : header_end + 1] = tool_result_header
+            index += len(tool_result_header)
+            continue
+
+        try:
+            constrain_index = result.index(constrain, channel_index + 1, header_end)
+        except ValueError:
+            index = header_end + 1
+            continue
+
         channel_and_recipient = encoding.decode(
             result[channel_index + 1 : constrain_index]
         )
         content_type = encoding.decode(result[constrain_index + 1 : header_end])
         if (
-            author != "assistant"
-            or " to=" not in channel_and_recipient
+            " to=" not in channel_and_recipient
+            or " to=functions." in channel_and_recipient
             or not channel_and_recipient.endswith(" ")
         ):
             index = header_end + 1
