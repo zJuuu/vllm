@@ -48,6 +48,7 @@ from vllm.entrypoints.openai.parser.harmony_utils import (
     get_encoding,
     get_streamable_parser_for_assistant,
     is_function_recipient,
+    remember_tool_call_reasoning,
 )
 from vllm.entrypoints.openai.responses.protocol import ResponsesRequest
 from vllm.logger import init_logger
@@ -130,6 +131,10 @@ class HarmonyParser(DelegatingParser):
 
         # Final-channel text held back while it could begin a stop string
         self._final_pending = ""
+
+        # Streamed reasoning and tool call ids, remembered when the output ends
+        self._streamed_reasoning = ""
+        self._streamed_tool_call_ids: list[str] = []
 
     @property
     def _harmony_parser(self) -> StreamableParser:
@@ -253,12 +258,15 @@ class HarmonyParser(DelegatingParser):
                             arguments = text
                     tool_calls.append(
                         FunctionCall(
+                            id=make_tool_call_id(),
                             name=extract_function_from_recipient(recipient),
                             arguments=arguments,
                         )
                     )
 
         reasoning = "\n".join(reasoning_parts) or None
+        if reasoning and tool_calls:
+            remember_tool_call_reasoning([tc.id for tc in tool_calls], reasoning)
         content = "\n".join(content_parts) or None
         return reasoning, content, tool_calls or None
 
@@ -334,9 +342,17 @@ class HarmonyParser(DelegatingParser):
                                 )
                             )
 
+        self._streamed_reasoning += combined_reasoning
+        self._streamed_tool_call_ids += [tc.id for tc in tool_messages if tc.id]
         if finished:
             self._next_tool_call_index = 0
             combined_content += self._stop_final_content("", request, finished=True)
+            if self._streamed_reasoning and self._streamed_tool_call_ids:
+                remember_tool_call_reasoning(
+                    self._streamed_tool_call_ids, self._streamed_reasoning
+                )
+            self._streamed_reasoning = ""
+            self._streamed_tool_call_ids = []
 
         if not combined_content and not combined_reasoning and not tool_messages:
             return None

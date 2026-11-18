@@ -19,6 +19,7 @@ from vllm.entrypoints.generate.base.protocol import FunctionCall
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
 from vllm.entrypoints.openai.parser.harmony_utils import (
     get_encoding,
+    recall_tool_call_reasoning,
 )
 from vllm.entrypoints.openai.responses.protocol import ResponsesRequest
 from vllm.parser.harmony import HarmonyParser
@@ -1681,3 +1682,38 @@ class TestStopStrings:
         assert content is None
         assert tool_call_tuples(tool_calls) == [("get_weather", '{"city": "Paris"}')]
         assert parser.matched_stop is None
+
+
+class TestToolCallReasoningRecall:
+    OUTPUT = (
+        "<|channel|>analysis<|message|>Search first, then add to cart.<|end|>"
+        "<|start|>assistant<|channel|>commentary to=functions.search <|constrain|>json"
+        '<|message|>{"q": "laptop"}<|call|>'
+    )
+
+    def test_parse(self, harmony_parser, chat_request):
+        _, _, tool_calls = harmony_parser.parse(
+            "", chat_request, model_output_token_ids=encode_output(self.OUTPUT)
+        )
+
+        assert recall_tool_call_reasoning([tool_calls[0].id]) == (
+            "Search first, then add to cart."
+        )
+
+    def test_parse_delta(self, gpt_oss_tokenizer, chat_request):
+        parser = HarmonyParser(gpt_oss_tokenizer)
+        token_ids = encode_output(self.OUTPUT)
+        ids = []
+        for i, token_id in enumerate(token_ids):
+            delta = parser.parse_delta(
+                delta_text="",
+                delta_token_ids=[token_id],
+                request=chat_request,
+                finished=i == len(token_ids) - 1,
+            )
+            ids += [tc.id for tc in (delta.tool_calls if delta else []) if tc.id]
+
+        assert recall_tool_call_reasoning(ids) == "Search first, then add to cart."
+
+    def test_unknown_id(self):
+        assert recall_tool_call_reasoning(["call_unknown", None]) is None

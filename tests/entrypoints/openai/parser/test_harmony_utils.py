@@ -20,6 +20,7 @@ from vllm.entrypoints.openai.parser.harmony_utils import (
     is_function_recipient,
     parse_chat_input_to_harmony_message,
     parse_chat_inputs_to_harmony_messages,
+    remember_tool_call_reasoning,
 )
 from vllm.entrypoints.openai.responses.harmony import (
     response_input_to_harmony,
@@ -972,6 +973,25 @@ class TestParseChatInputToHarmonyMessage:
             "functions.get_weather",
             "functions.get_time",
         ]
+
+    def test_assistant_tool_call_recalls_reasoning(self):
+        remember_tool_call_reasoning(["call_recall"], "Plan: search, then buy.")
+        call = {
+            "id": "call_recall",
+            "type": "function",
+            "function": {"name": "search", "arguments": "{}"},
+        }
+
+        recalled = parse_chat_input_to_harmony_message(
+            {"role": "assistant", "tool_calls": [call]}
+        )
+        sent = parse_chat_input_to_harmony_message(
+            {"role": "assistant", "tool_calls": [call], "reasoning": "Own reasoning."}
+        )
+
+        assert recalled[0].channel == "analysis"
+        assert recalled[0].content[0].text == "Plan: search, then buy."
+        assert sent[0].content[0].text == "Own reasoning."
 
     def test_tool_message_with_array_content(self):
         tool_id_names = {

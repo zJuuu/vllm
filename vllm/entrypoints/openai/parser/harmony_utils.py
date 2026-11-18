@@ -3,6 +3,7 @@
 
 import datetime
 import json
+from collections import OrderedDict
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -130,6 +131,29 @@ def forbids_tool_calls(request: "ChatCompletionRequest | ResponsesRequest") -> b
         message.get("role") == "tool" or message.get("tool_calls")
         for message in request.messages
     )
+
+
+# Reasoning of the tool calls this server returned, by tool call id. Clients
+# often send a call back without its `reasoning`, but GPT-OSS expects the
+# reasoning of the current tool loop in the prompt. Only a client holding the
+# random call id can bring the reasoning back.
+_TOOL_CALL_REASONING: OrderedDict[str, str] = OrderedDict()
+_TOOL_CALL_REASONING_SIZE = 8192
+
+
+def remember_tool_call_reasoning(tool_call_ids: list[str], reasoning: str) -> None:
+    for tool_call_id in tool_call_ids:
+        _TOOL_CALL_REASONING[tool_call_id] = reasoning
+        _TOOL_CALL_REASONING.move_to_end(tool_call_id)
+    while len(_TOOL_CALL_REASONING) > _TOOL_CALL_REASONING_SIZE:
+        _TOOL_CALL_REASONING.popitem(last=False)
+
+
+def recall_tool_call_reasoning(tool_call_ids: list[str | None]) -> str | None:
+    for tool_call_id in tool_call_ids:
+        if tool_call_id in _TOOL_CALL_REASONING:
+            return _TOOL_CALL_REASONING[tool_call_id]
+    return None
 
 
 def get_system_message(
@@ -552,7 +576,9 @@ def parse_chat_input_to_harmony_message(
             commentary_msg = commentary_msg.with_channel("commentary")
             msgs.append(commentary_msg)
 
-        reasoning = chat_msg.get("reasoning")
+        reasoning = chat_msg.get("reasoning") or recall_tool_call_reasoning(
+            [call.get("id") for call in tool_calls]
+        )
         if reasoning:
             analysis_msg = Message.from_role_and_content(Role.ASSISTANT, reasoning)
             analysis_msg = analysis_msg.with_channel("analysis")
