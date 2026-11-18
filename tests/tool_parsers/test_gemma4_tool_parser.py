@@ -16,6 +16,7 @@ from vllm.parser.gemma4 import (
     _parse_gemma4_array,
 )
 from vllm.tool_parsers.gemma4_engine_tool_parser import Gemma4EngineToolParser
+from vllm.tool_parsers.gemma4_utils import parse_tool_calls
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -177,6 +178,14 @@ def test_structural_tag_uses_marker_token_ids(mock_tokenizer):
     assert dumped["tags"][0]["end"] == {"type": "token", "token": TOOL_CALL_END_ID}
 
 
+def test_offline_parse_tool_calls_returns_literal_text():
+    text = '<|tool_call>call:f{a:true,b:null,c:<|"|>x<|"|>,n:42}<tool_call|>'
+
+    assert parse_tool_calls(text) == [
+        {"name": "f", "arguments": {"a": "true", "b": "null", "c": "x", "n": "42"}}
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Unit tests for _parse_gemma4_args (shared parser logic)
 # ---------------------------------------------------------------------------
@@ -307,6 +316,10 @@ class TestParseGemma4Args:
             "unit": "celsius",
             "big": "1e3",
         }
+
+    def test_non_finite_bare_values_stay_strings(self):
+        result = _parse_gemma4_args("x:NaN,y:Infinity")
+        assert result == {"x": "NaN", "y": "Infinity"}
 
     @pytest.mark.timeout(5)
     def test_malformed_partial_array(self):

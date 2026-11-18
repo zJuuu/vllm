@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import functools
 import json
+import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -83,7 +84,11 @@ def _bare_value(raw_val: str) -> object:
         value = json.loads(raw_val)
     except ValueError:
         return raw_val
-    if isinstance(value, (dict, list, str)) or json.dumps(value) != raw_val:
+    if (
+        isinstance(value, (dict, list, str))
+        or (isinstance(value, float) and not math.isfinite(value))
+        or json.dumps(value) != raw_val
+    ):
         return raw_val
     return value
 

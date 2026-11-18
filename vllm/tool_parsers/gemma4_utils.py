@@ -35,6 +35,8 @@ Ported from `transformers.models.gemma4.utils_gemma4` so that vLLM users
 do not need a transformers dependency for output parsing.
 """
 
+import json
+
 import regex as re
 
 _TOOL_RESPONSE_START_TAG = "<|tool_response>"
@@ -60,7 +62,14 @@ def _parse_tool_arguments(args_str: str) -> dict[str, str]:
     from vllm.parser.gemma4 import _parse_gemma4_args
 
     parsed = _parse_gemma4_args(args_str)
-    return {k: str(v) if not isinstance(v, str) else v for k, v in parsed.items()}
+    return {
+        k: v
+        if isinstance(v, str)
+        else str(v)
+        if isinstance(v, dict | list)
+        else json.dumps(v)
+        for k, v in parsed.items()
+    }
 
 
 def parse_tool_calls(text: str, *, strict: bool = False) -> list[dict]:
