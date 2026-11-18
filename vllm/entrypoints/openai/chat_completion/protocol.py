@@ -658,6 +658,14 @@ class ChatCompletionRequest(OpenAIBaseModel):
             return parser.is_reasoning_end(prompt_token_ids)
         return None
 
+    def _output_kind(self) -> RequestOutputKind:
+        if self.stream:
+            return RequestOutputKind.DELTA
+        if self._content_stop and (self.n or 1) == 1:
+            # A parser applying the stop strings watches the output as it grows.
+            return RequestOutputKind.CUMULATIVE
+        return RequestOutputKind.FINAL_ONLY
+
     def build_chat_params(
         self,
         default_template: str | None,
@@ -825,14 +833,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
             skip_special_tokens=skip_special_tokens,
             spaces_between_special_tokens=self.spaces_between_special_tokens,
             include_stop_str_in_output=self.include_stop_str_in_output,
-            output_kind=(
-                RequestOutputKind.DELTA
-                if self.stream
-                # A parser applying the stop strings watches the output as it grows.
-                else RequestOutputKind.CUMULATIVE
-                if self._content_stop
-                else RequestOutputKind.FINAL_ONLY
-            ),
+            output_kind=self._output_kind(),
             stream_interval=self.stream_interval,
             structured_outputs=self.extract_structured_outputs(),
             logit_bias=self.logit_bias,

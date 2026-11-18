@@ -866,8 +866,11 @@ class OpenAIServingChat(GenerateBaseServing):
 
                     yield chunk
 
-                if all(finish_reason_sent):
-                    # A parser matched a stop string before the engine finished.
+                if all(finish_reason_sent) and any(
+                    p.parser is not None and p.parser.matched_stop is not None
+                    for p in processors
+                ):
+                    # The parser matched a stop string; stop generating.
                     break
 
             if self._include_reasoning_tokens_details and not include_continuous_usage:
@@ -989,7 +992,7 @@ class OpenAIServingChat(GenerateBaseServing):
             self._make_parser(
                 request, tokenizer, self._effective_chat_template_kwargs(request)
             )
-            if parser is not None and request._content_stop and request.n == 1
+            if parser is not None and request._content_stop and (request.n or 1) == 1
             else None
         )
         num_watched_tokens = 0

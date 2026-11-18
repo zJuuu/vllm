@@ -275,12 +275,15 @@ def _schema_for_harmony(
             and {"type": "null"} in variants
         ):
             # Optional[X]: render X, keeping its enum and constraints.
-            value = next(v for v in variants if v != {"type": "null"})
+            value = next((v for v in variants if v != {"type": "null"}), None)
             if isinstance(value, dict):
                 rest = {k: v for k, v in schema.items() if k != key}
+                if not rest.get("description"):
+                    rest.pop("description", None)
                 optional = _schema_for_harmony({**value, **rest}, defs, seen_refs)
+                description = " ".join(str(optional.get("description") or "").split())
                 optional["description"] = "; ".join(
-                    filter(None, [optional.get("description"), "or null"])
+                    filter(None, [description, "or null"])
                 )
                 return optional
     notes: list[str] = []

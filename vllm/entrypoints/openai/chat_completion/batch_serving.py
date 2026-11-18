@@ -295,6 +295,7 @@ class OpenAIServingChatBatch(OpenAIServingChat):
                 else:
                     logprobs = None
 
+                matched_stop = None
                 if parser_cls is not None:
                     single_request = request.to_chat_completion_request(
                         request.messages[prompt_idx]
@@ -306,6 +307,8 @@ class OpenAIServingChatBatch(OpenAIServingChat):
                             single_request
                         ),
                     )
+                    # Restores what rendering moved off the request (stop strings).
+                    single_request = parser.adjust_request(single_request)
                     parser.set_prompt_token_ids(final_res.prompt_token_ids)
                     reasoning, content, _ = parser.parse(
                         output.text,
@@ -315,6 +318,7 @@ class OpenAIServingChatBatch(OpenAIServingChat):
                     total_reasoning_tokens += parser.count_reasoning_tokens(
                         output.token_ids
                     )
+                    matched_stop = parser.matched_stop
                     if not request.include_reasoning:
                         reasoning = None
                 else:
@@ -340,9 +344,11 @@ class OpenAIServingChatBatch(OpenAIServingChat):
                     message=message,
                     logprobs=logprobs,
                     finish_reason=output.finish_reason
-                    if output.finish_reason
+                    if output.finish_reason and matched_stop is None
                     else "stop",
-                    stop_reason=output.stop_reason,
+                    stop_reason=output.stop_reason
+                    if matched_stop is None
+                    else matched_stop,
                     token_ids=(
                         as_list(output.token_ids) if request.return_token_ids else None
                     ),

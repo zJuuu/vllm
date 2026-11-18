@@ -1629,6 +1629,19 @@ class TestStopStrings:
             RequestOutputKind.CUMULATIVE
         )
 
+    def test_n_above_one_is_not_watched(self, harmony_parser):
+        request = ChatCompletionRequest(
+            model=REASONING_MODEL_NAME,
+            messages=[{"role": "user", "content": "Hi"}],
+            stop=["."],
+            n=2,
+            temperature=1.0,
+        )
+        request = harmony_parser.adjust_request(request)
+        assert request.to_sampling_params(16, {}).output_kind == (
+            RequestOutputKind.FINAL_ONLY
+        )
+
     def test_empty_stop_string_is_left_to_validation(self, harmony_parser):
         request = self._request(harmony_parser, ["", "."])
         assert request.stop == ["", "."]

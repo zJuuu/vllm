@@ -250,6 +250,26 @@ class TestToolParametersForHarmony:
             "description": "integer; minimum: 1; or null",
         }
 
+    def test_optional_with_multiline_description(self):
+        rendered = _rendered_parameters(
+            {
+                "type": "object",
+                "properties": {
+                    "unit": {
+                        "anyOf": [
+                            {"type": "string", "description": "Unit\nof measure"},
+                            {"type": "null"},
+                        ]
+                    },
+                    "nothing": {"anyOf": [{"type": "null"}, {"type": "null"}]},
+                },
+            }
+        )
+
+        assert rendered["properties"]["unit"]["description"] == (
+            "Unit of measure; or null"
+        )
+
     def test_request_parameters_are_not_modified(self):
         parameters = {"properties": {"version": {"const": "v2"}}}
         _rendered_parameters(parameters)
