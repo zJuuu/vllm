@@ -94,13 +94,12 @@ class ChatStreamProcessor:
 
         if delta is not None:
             delta = maybe_filter_parallel_tool_calls(delta, self.request)
-        if finish_reason is not None:
-            if self.parser is not None and self.parser.matched_stop is not None:
-                finish_reason = "stop"
-            else:
-                finish_reason = resolve_finish_reason(
-                    finish_reason, self.request, self.tools_streamed
-                )
+        if self.parser is not None and self.parser.matched_stop is not None:
+            finish_reason = "stop"
+        elif finish_reason is not None:
+            finish_reason = resolve_finish_reason(
+                finish_reason, self.request, self.tools_streamed
+            )
         return ChatStreamStep(delta, finish_reason)
 
     def stop_reason(self, engine_stop_reason: int | str | None) -> int | str | None:

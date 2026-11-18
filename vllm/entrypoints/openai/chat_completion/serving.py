@@ -755,7 +755,7 @@ class OpenAIServingChat(GenerateBaseServing):
                         # still need to send a chunk even if delta_message is None
                         # to ensure all tokens are included in the response
                         if (
-                            output.finish_reason is None
+                            finish_reason is None
                             and logprobs is None
                             and (not request.return_token_ids or hide_stream_metadata)
                         ):
@@ -794,7 +794,7 @@ class OpenAIServingChat(GenerateBaseServing):
                         request.return_token_ids and not hide_stream_metadata
                     )
 
-                    if output.finish_reason is None:
+                    if finish_reason is None:
                         # Send token-by-token response for each request.n
                         choice_data = ChatCompletionResponseStreamChoice(
                             index=i,
@@ -865,6 +865,10 @@ class OpenAIServingChat(GenerateBaseServing):
                         )
 
                     yield chunk
+
+                if all(finish_reason_sent):
+                    # A parser matched a stop string before the engine finished.
+                    break
 
             if self._include_reasoning_tokens_details and not include_continuous_usage:
                 for i, processor in enumerate(processors):

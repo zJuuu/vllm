@@ -114,15 +114,15 @@ def test_hidden_reasoning_hides_metadata_only_with_a_parser():
 
 
 def test_stop_string_matched_by_parser():
-    """A stop string the parser applied to the content finishes with `stop`
-    and is reported as the `stop_reason`, whatever the engine saw."""
+    """A stop string the parser matched finishes the choice with `stop`
+    before the engine does, and is reported as the `stop_reason`."""
     parser = MagicMock(matched_stop=None)
     parser.parse_delta.side_effect = [DeltaMessage(content="Sunny"), None]
     processor = _processor(_request(), parser)
 
     processor.step("x", [1], None, [0])
     parser.matched_stop = "."
-    _, finish_reason = processor.step("y", [2], "length", [0])
+    _, finish_reason = processor.step("y", [2], None, [0])
 
     assert finish_reason == "stop"
     assert processor.stop_reason(None) == "."
