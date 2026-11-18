@@ -9,6 +9,8 @@ from dataclasses import dataclass, replace
 from enum import Enum, auto
 from typing import NamedTuple
 
+from openai.types.responses import FunctionTool
+from openai.types.responses.tool import Tool as ResponsesTool
 from openai_harmony import (
     HarmonyError,
     Message,
@@ -37,6 +39,7 @@ from vllm.entrypoints.generate.base.protocol import (
 )
 from vllm.entrypoints.openai.chat_completion.protocol import (
     ChatCompletionRequest,
+    ChatCompletionToolsParam,
 )
 from vllm.entrypoints.openai.parser.harmony_utils import (
     extract_function_from_recipient,
@@ -57,6 +60,7 @@ from vllm.tool_parsers.structural_tag_registry import (
     get_function_parameters,
     get_model_structural_tag,
     register_vllm_structural_tag,
+    resolve_tool_strictness,
 )
 from vllm.tool_parsers.tool_strict_level import ToolStrictLevel
 
@@ -466,10 +470,23 @@ class HarmonyParser(DelegatingParser):
     def adjust_request(
         self, request: ChatCompletionRequest | ResponsesRequest
     ) -> ChatCompletionRequest | ResponsesRequest:
-        strict_level = self.tool_strict_level
-        if strict_level is None and self._tool_parser is not None:
-            strict_level = self._tool_parser.default_tool_strict_level
-        request = _adjust_output_format(request, strict_level)
+        if (
+            request.tools
+            and self.tool_parser is not None
+            and self.tool_strict_level is None
+        ):
+            # GPT-OSS closes nested JSON unevenly and breaks schemas without a
+            # grammar, so a tool without `strict` is treated as `strict: true`.
+            request.tools = [_strict_unless_disabled(tool) for tool in request.tools]
+        add_tool_calls = bool(
+            self.tool_parser is not None
+            and request.tools
+            and resolve_tool_strictness(
+                request.tools, "auto", self.tool_strict_level or ToolStrictLevel.AUTO
+            )
+            is None
+        )
+        request = _adjust_output_format(request, add_tool_calls)
         return super().adjust_request(request)
 
     @staticmethod
@@ -601,9 +618,21 @@ def get_harmony_structural_tag(
     )
 
 
+def _strict_unless_disabled(
+    tool: ChatCompletionToolsParam | ResponsesTool,
+) -> ChatCompletionToolsParam | ResponsesTool:
+    if isinstance(tool, ChatCompletionToolsParam) and tool.function.strict is None:
+        return tool.model_copy(
+            update={"function": tool.function.model_copy(update={"strict": True})}
+        )
+    if isinstance(tool, FunctionTool) and tool.strict is None:
+        return tool.model_copy(update={"strict": True})
+    return tool
+
+
 def _adjust_output_format(
     request: ChatCompletionRequest | ResponsesRequest,
-    strict_level: ToolStrictLevel | None,
+    add_tool_calls: bool,
 ) -> ChatCompletionRequest | ResponsesRequest:
     """Canonicalize request constraints into a reasoning-aware StructuralTag."""
     params = request.extract_structured_outputs()
@@ -658,14 +687,12 @@ def _adjust_output_format(
             reasoning=True,
             strict_level=ToolStrictLevel.FUNCTION,
         )
-        if request.tools
-        and request.tool_choice == "auto"
-        and strict_level in (None, ToolStrictLevel.AUTO)
+        if add_tool_calls and request.tool_choice == "auto"
         else None
     )
     if tool_calls is not None:
         # The response format applies to the answer; tools stay callable.
-        # Above AUTO, `_apply_structural_tag` adds the tool calls instead.
+        # Otherwise `_apply_structural_tag` adds the tool calls itself.
         # The last element of the Harmony tag holds the tool call tags.
         content = OrFormat(elements=[content, tool_calls.format.elements[-1]])
     structural_tag = _assemble_tag(

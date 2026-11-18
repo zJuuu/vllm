@@ -1562,6 +1562,8 @@ class TestAdjustRequest:
         self, harmony_parser, xgrammar_backend, gpt_oss_stop_token_ids
     ):
         request = self._build_request("chat", tool_choice="auto")
+        for tool in request.tools:
+            tool.function.strict = None
         adjusted_request = harmony_parser.adjust_request(request)
         self._assert_structured_outputs_admission(
             adjusted_request,
@@ -1581,3 +1583,7 @@ class TestAdjustRequest:
             ' <|constrain|>json<|message|>{"city": 1}<|call|>'
         )
         assert grammar.validate_tokens(wrong_type) != wrong_type
+
+    def test_explicit_non_strict_tools_keep_free_arguments(self, harmony_parser):
+        request = self._build_request("chat", tool_choice="auto", strict_tools=False)
+        assert harmony_parser.adjust_request(request).structured_outputs is None
