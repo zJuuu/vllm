@@ -124,7 +124,7 @@ def test_supported_structural_tag_models_include_vllm_builtins():
 def test_gemma4_forced_choice_requires_special_token_markers(sample_tools, tool_choice):
     vocab = ["<|tool_call>", "<tool_call|>", '<|"|>', "<", "|", "tool_call", ">"]
     vocab += ["call:get_weather", "{", "city", ":", "Paris", "}", "Hi", "<eos>"]
-    vocab += ["x-api-key"]
+    vocab += ["x-api-key", "r"]
     tokenizer_info = xgr.TokenizerInfo(vocab, stop_token_ids=[vocab.index("<eos>")])
     tag = get_model_structural_tag("gemma4", sample_tools, tool_choice, False)
     compiled = xgr.GrammarCompiler(tokenizer_info).compile_structural_tag(tag)
@@ -139,6 +139,7 @@ def test_gemma4_forced_choice_requires_special_token_markers(sample_tools, tool_
     # cannot express.
     assert accepts(["<|tool_call>", "call:get_weather", "{", "x-api-key", ":", "Paris"])
     assert not accepts(["<", "|", "tool_call", ">", *call])
+    assert not accepts(["<|tool_call>", "call:get_weather", "r", "{"])
     assert not accepts(["Hi"])
 
 

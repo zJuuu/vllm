@@ -626,7 +626,12 @@ def _gemma4_tool_tag(tool: FunctionToolParam) -> TagFormat:
     `x-api-key`, so a non-strict call keeps free arguments."""
     parameters = get_function_parameters(tool.function)
     arguments: Any = (
-        AnyTextFormat(excludes=_GEMMA4_ARGUMENT_EXCLUDES)
+        SequenceFormat(
+            elements=[
+                ConstStringFormat(value="{"),
+                AnyTextFormat(excludes=_GEMMA4_ARGUMENT_EXCLUDES),
+            ]
+        )
         if parameters is True
         else JSONSchemaFormat(
             json_schema=_gemma4_sorted_schema(parameters),
