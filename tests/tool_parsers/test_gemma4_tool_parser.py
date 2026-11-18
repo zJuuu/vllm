@@ -85,7 +85,34 @@ _TOOLS = [
             "replace_all": {"type": "boolean"},
         },
     ),
+    _make_tool(
+        "lookup",
+        {
+            "filters": {"type": "object"},
+            "code": {"type": ["string", "integer"]},
+            "zip": {"type": "string"},
+            "limit": {"type": "integer"},
+            "note": {"description": "Free-form."},
+        },
+    ),
 ]
+
+_LOOKUP_OUTPUT = (
+    "<|tool_call>call:lookup{"
+    'filters:{limit:5,active:true,tag:<|"|>new<|"|>},'
+    'code:<|"|>007<|"|>,'
+    "zip:2134,"
+    'limit:<|"|>10<|"|>,'
+    "note:3}"
+    "<tool_call|>"
+)
+_LOOKUP_ARGS = {
+    "filters": {"limit": 5, "active": True, "tag": "new"},
+    "code": "007",
+    "zip": "2134",
+    "limit": 10,
+    "note": 3,
+}
 
 
 @pytest.fixture
@@ -133,14 +160,15 @@ def test_named_custom_tool_choice_skips_structured_outputs(mock_tokenizer):
     assert request.structured_outputs is None
 
 
+
 # ---------------------------------------------------------------------------
 # Unit tests for _parse_gemma4_args (shared parser logic)
 # ---------------------------------------------------------------------------
 
 
 class TestParseGemma4Args:
-    """Values are returned as strings; type coercion to proper JSON types
-    happens at the engine layer."""
+    """Delimited values are strings; bare values that round-trip as JSON
+    literals keep their type, anything else stays a string."""
 
     def test_empty_string(self):
         assert _parse_gemma4_args("") == {}
@@ -164,23 +192,23 @@ class TestParseGemma4Args:
 
     def test_integer_value(self):
         result = _parse_gemma4_args("count:42")
-        assert result == {"count": "42"}
+        assert result == {"count": 42}
 
     def test_float_value(self):
         result = _parse_gemma4_args("score:3.14")
-        assert result == {"score": "3.14"}
+        assert result == {"score": 3.14}
 
     def test_boolean_true(self):
         result = _parse_gemma4_args("flag:true")
-        assert result == {"flag": "true"}
+        assert result == {"flag": True}
 
     def test_boolean_false(self):
         result = _parse_gemma4_args("flag:false")
-        assert result == {"flag": "false"}
+        assert result == {"flag": False}
 
     def test_null_value(self):
         result = _parse_gemma4_args("param:null")
-        assert result == {"param": "null"}
+        assert result == {"param": None}
 
     def test_mixed_types(self):
         result = _parse_gemma4_args(
@@ -188,9 +216,9 @@ class TestParseGemma4Args:
         )
         assert result == {
             "name": "test",
-            "count": "42",
-            "active": "true",
-            "score": "3.14",
+            "count": 42,
+            "active": True,
+            "score": 3.14,
         }
 
     def test_nested_object(self):
@@ -210,7 +238,7 @@ class TestParseGemma4Args:
         assert result == {"outer": {"inner": "val"}}
 
         result = _parse_gemma4_args('<|"|>name<|"|>:<|"|>Alice<|"|>,count:42')
-        assert result == {"name": "Alice", "count": "42"}
+        assert result == {"name": "Alice", "count": 42}
 
     def test_unterminated_string(self):
         """Unterminated strings should take everything after the delimiter."""
@@ -253,7 +281,16 @@ class TestParseGemma4Args:
 
         # Non-partial mode parses trailing dot normally
         result = _parse_gemma4_args("left:108.,right:22.8", partial=False)
-        assert result == {"left": "108.", "right": "22.8"}
+        assert result == {"left": "108.", "right": 22.8}
+
+    def test_bare_values_that_do_not_round_trip_stay_strings(self):
+        result = _parse_gemma4_args("version:1.10,zip:02134,unit:celsius,big:1e3")
+        assert result == {
+            "version": "1.10",
+            "zip": "02134",
+            "unit": "celsius",
+            "big": "1e3",
+        }
 
     @pytest.mark.timeout(5)
     def test_malformed_partial_array(self):
@@ -272,7 +309,7 @@ class TestParseGemma4Array:
 
     def test_bare_values(self):
         result = _parse_gemma4_array("42,true,3.14")
-        assert result == ["42", "true", "3.14"]
+        assert result == [42, True, 3.14]
 
     @pytest.mark.timeout(5)
     def test_string_element_with_closing_bracket(self):
@@ -282,7 +319,7 @@ class TestParseGemma4Array:
     @pytest.mark.timeout(5)
     def test_stray_closing_bracket(self):
         result = _parse_gemma4_array("42,]trailing")
-        assert result == ["42"]
+        assert result == [42]
 
     def test_trailing_dot_float_partial_withheld(self):
         """Array elements with trailing dot withheld in partial mode."""
@@ -291,7 +328,7 @@ class TestParseGemma4Array:
 
         # Stable elements before trailing-dot element are kept
         result = _parse_gemma4_array("42,108.,3", partial=True)
-        assert result == ["42"]
+        assert result == [42]
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +429,13 @@ class TestExtractToolCalls:
         assert result.tool_calls[0].function.name == "set_status"
         args = json.loads(result.tool_calls[0].function.arguments)
         assert args == {"is_active": True, "count": 42, "score": 3.14}
+
+    def test_types_follow_the_model_unless_the_schema_forbids_them(
+        self, parser, mock_request
+    ):
+        result = parser.extract_tool_calls(_LOOKUP_OUTPUT, mock_request)
+
+        assert json.loads(result.tool_calls[0].function.arguments) == _LOOKUP_ARGS
 
     def test_incomplete_tool_call(self, parser, mock_request):
         model_output = '<|tool_call>call:get_weather{location:<|"|>London'
@@ -667,6 +711,19 @@ class TestStreamingExtraction:
         parsed_args = json.loads(args_text)
         assert parsed_args["count"] == 42
         assert parsed_args["active"] is True
+
+    @pytest.mark.parametrize("size", [1, 3, 7])
+    def test_streaming_types_match_non_streaming(self, parser, mock_request, size):
+        body = _LOOKUP_OUTPUT[len(TOOL_CALL_START) : -len(TOOL_CALL_END)]
+        chunks = [
+            TOOL_CALL_START,
+            *(body[i : i + size] for i in range(0, len(body), size)),
+            TOOL_CALL_END,
+        ]
+
+        results = self._simulate_streaming(parser, mock_request, chunks)
+
+        assert json.loads(self._collect_arguments(results)) == _LOOKUP_ARGS
 
     def test_streaming_boolean_split_across_chunks(self, parser, mock_request):
         """Boolean value split across token boundaries must not corrupt JSON."""

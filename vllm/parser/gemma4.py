@@ -27,6 +27,11 @@ from vllm.parser.engine.parser_engine_config import (
     ParserState,
     Transition,
 )
+from vllm.tool_parsers.utils import (
+    coerce_to_schema_type,
+    extract_types_from_schema,
+    find_tool_properties,
+)
 
 if TYPE_CHECKING:
     from vllm.entrypoints.openai.chat_completion.protocol import (
@@ -63,6 +68,23 @@ def _strip_partial_delim(value: str) -> str:
     for suffix in _PARTIAL_DELIM_SUFFIXES:
         if value.endswith(suffix):
             return value[: -len(suffix)]
+    return value
+
+
+def _bare_value(raw_val: str) -> object:
+    """Type a value written without `STRING_DELIM`.
+
+    Gemma4 quotes every string with `STRING_DELIM`, so a bare `42`, `true`
+    or `null` is a JSON literal. Only literals that serialize back to the
+    same text are typed; anything else (`1.10`, `02134`, a bare word) stays
+    the string the model wrote.
+    """
+    try:
+        value = json.loads(raw_val)
+    except ValueError:
+        return raw_val
+    if isinstance(value, (dict, list, str)) or json.dumps(value) != raw_val:
+        return raw_val
     return value
 
 
@@ -207,7 +229,7 @@ def _parse_gemma4_fields(
                 # Digits may still arrive (e.g. "108." -> "108.2");
                 # withhold to avoid corrupting the streaming diff.
                 break
-            result[key] = raw_val
+            result[key] = _bare_value(raw_val)
 
     return result, open_key
 
@@ -288,7 +310,7 @@ def _parse_gemma4_array(arr_str: str, *, partial: bool = False) -> list:
             raw_val = arr_str[val_start:i].strip()
             if partial and raw_val.endswith("."):
                 break
-            items.append(raw_val)
+            items.append(_bare_value(raw_val))
 
     return items
 
@@ -461,6 +483,62 @@ def gemma4_config(thinking: bool = False) -> ParserEngineConfig:
     )
 
 
+_SCHEMA_TYPE_KEYS = ("type", "enum", "anyOf", "oneOf", "allOf")
+
+
+def _json_type(value: object) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    return "string"
+
+
+def _coerce_gemma4_value(value: object, schema: dict) -> object:
+    """Coerce *value* only when its type is not one *schema* allows.
+
+    Unlike `ParserEngine._coerce_value`, strings are never re-typed when the
+    schema allows a string, and typed literals are kept when the schema
+    declares no type: Gemma4 already tells strings and literals apart.
+    """
+    if isinstance(value, dict):
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            _coerce_gemma4_dict(value, properties)
+        return value
+    if isinstance(value, list):
+        items = schema.get("items")
+        if isinstance(items, dict):
+            for i, item in enumerate(value):
+                value[i] = _coerce_gemma4_value(item, items)
+        return value
+    if not any(key in schema for key in _SCHEMA_TYPE_KEYS):
+        return value
+    types = set(extract_types_from_schema(schema))
+    if (
+        isinstance(value, float)
+        and value.is_integer()
+        and types & {"integer", "number"}
+    ):
+        return int(value)
+    value_type = _json_type(value)
+    if value_type in types or (value_type == "integer" and "number" in types):
+        return value
+    raw = value if isinstance(value, str) else json.dumps(value)
+    return coerce_to_schema_type(raw, sorted(types))
+
+
+def _coerce_gemma4_dict(args: dict, properties: dict) -> None:
+    for key, value in args.items():
+        prop = properties.get(key)
+        if isinstance(prop, dict):
+            args[key] = _coerce_gemma4_value(value, prop)
+
+
 _GEMMA4_THOUGHT_PREFIX = "thought\n"
 _GEMMA4_THOUGHT_TOKEN = "thought"
 
@@ -497,6 +575,16 @@ class Gemma4Parser(ParserEngine):
         self._reasoning_text = ""
         self._prefix_stripped = False
         self._is_first_feed = True
+
+    def _fix_arg_types(self, args_json: str, func_name: str) -> str:
+        if not self._tools or not func_name:
+            return args_json
+        properties = find_tool_properties(self._tools, func_name)
+        if not properties:
+            return args_json
+        args = json.loads(args_json)
+        _coerce_gemma4_dict(args, properties)
+        return json.dumps(args, ensure_ascii=False)
 
     def _preprocess_feed(
         self,
