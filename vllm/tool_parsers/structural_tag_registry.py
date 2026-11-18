@@ -605,8 +605,8 @@ _GEMMA4_ARGUMENT_EXCLUDES = [
 
 
 def _gemma4_sorted_schema(schema: Any) -> Any:
-    """Order `properties` by name at every level, as the chat template
-    renders them and the model writes them."""
+    """Order `properties` by case-insensitive name at every level, as the
+    chat template's `dictsort` renders them and the model writes them."""
     if isinstance(schema, list):
         return [_gemma4_sorted_schema(item) for item in schema]
     if not isinstance(schema, dict):
@@ -614,24 +614,30 @@ def _gemma4_sorted_schema(schema: Any) -> Any:
     out = {key: _gemma4_sorted_schema(value) for key, value in schema.items()}
     properties = out.get("properties")
     if isinstance(properties, dict):
-        out["properties"] = dict(sorted(properties.items()))
+        out["properties"] = dict(
+            sorted(properties.items(), key=lambda item: item[0].lower())
+        )
     return out
 
 
 def _gemma4_tool_tag(tool: FunctionToolParam) -> TagFormat:
+    """A call to `tool`: the arguments follow the schema only for a strict
+    tool. Gemma's syntax without a schema has no form for keys such as
+    `x-api-key`, so a non-strict call keeps free arguments."""
+    parameters = get_function_parameters(tool.function)
+    arguments: Any = (
+        AnyTextFormat(excludes=_GEMMA4_ARGUMENT_EXCLUDES)
+        if parameters is True
+        else JSONSchemaFormat(
+            json_schema=_gemma4_sorted_schema(parameters),
+            style="gemma",
+            excludes=_GEMMA4_ARGUMENT_EXCLUDES,
+        )
+    )
     return TagFormat(
         begin=TokenFormat(token=_GEMMA4_TOOL_CALL_START),
         content=SequenceFormat(
-            elements=[
-                ConstStringFormat(value=f"call:{tool.function.name}"),
-                JSONSchemaFormat(
-                    json_schema=_gemma4_sorted_schema(
-                        get_function_parameters(tool.function)
-                    ),
-                    style="gemma",
-                    excludes=_GEMMA4_ARGUMENT_EXCLUDES,
-                ),
-            ]
+            elements=[ConstStringFormat(value=f"call:{tool.function.name}"), arguments]
         ),
         end=TokenFormat(token=_GEMMA4_TOOL_CALL_END),
     )
@@ -646,25 +652,18 @@ def get_gemma4_structural_tag(
     token_suffix: str = "",
 ) -> StructuralTag:
     """Build the Gemma 4 tool-call structural tag on special-token markers."""
-    del builtin_tools, token_suffix
+    del builtin_tools, reasoning, token_suffix
 
     tags = [_gemma4_tool_tag(tool) for tool in tools]
     if tool_choice == "forced":
-        suffix_tag: Any = tags[0]
-    else:
-        suffix_tag = TokenTriggeredTagsFormat(
+        return StructuralTag(format=tags[0])
+    return StructuralTag(
+        format=TokenTriggeredTagsFormat(
             trigger_tokens=[_GEMMA4_TOOL_CALL_START],
             tags=tags,
             at_least_one=tool_choice == "required",
         )
-    if reasoning:
-        prefix_tag = TagFormat(
-            begin="",
-            content=AnyTextFormat(excludes=_GEMMA4_ARGUMENT_EXCLUDES),
-            end=TokenFormat(token=_GEMMA4_CHANNEL_END),
-        )
-        return StructuralTag(format=SequenceFormat(elements=[prefix_tag, suffix_tag]))
-    return StructuralTag(format=suffix_tag)
+    )
 
 
 # ---------------------------------------------------------------------------

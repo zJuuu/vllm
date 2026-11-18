@@ -124,6 +124,7 @@ def test_supported_structural_tag_models_include_vllm_builtins():
 def test_gemma4_forced_choice_requires_special_token_markers(sample_tools, tool_choice):
     vocab = ["<|tool_call>", "<tool_call|>", '<|"|>', "<", "|", "tool_call", ">"]
     vocab += ["call:get_weather", "{", "city", ":", "Paris", "}", "Hi", "<eos>"]
+    vocab += ["x-api-key"]
     tokenizer_info = xgr.TokenizerInfo(vocab, stop_token_ids=[vocab.index("<eos>")])
     tag = get_model_structural_tag("gemma4", sample_tools, tool_choice, False)
     compiled = xgr.GrammarCompiler(tokenizer_info).compile_structural_tag(tag)
@@ -134,8 +135,39 @@ def test_gemma4_forced_choice_requires_special_token_markers(sample_tools, tool_
 
     call = ["call:get_weather", "{", "city", ":", '<|"|>', "Paris", '<|"|>', "}"]
     assert accepts(["<|tool_call>", *call, "<tool_call|>", "<eos>"])
+    # Non-strict arguments are free, also with keys Gemma's schema-less syntax
+    # cannot express.
+    assert accepts(["<|tool_call>", "call:get_weather", "{", "x-api-key", ":", "Paris"])
     assert not accepts(["<", "|", "tool_call", ">", *call])
     assert not accepts(["Hi"])
+
+
+def test_gemma4_tag_orders_properties_like_the_template():
+    tools = [
+        ChatCompletionToolsParam(
+            type="function",
+            function={
+                "name": "list_pages",
+                "strict": True,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "pageSize": {"type": "integer"},
+                        "page_token": {"type": "string"},
+                    },
+                },
+            },
+        )
+    ]
+    tag = get_model_structural_tag("gemma4", tools, "required", False)
+    schema = tag.model_dump()["format"]["tags"][0]["content"]["elements"][1]
+
+    assert list(schema["json_schema"]["properties"]) == [
+        "page_token",
+        "pageSize",
+        "query",
+    ]
 
 
 def test_deepseek_v41_named_choice_emits_one_call(sample_tools):
