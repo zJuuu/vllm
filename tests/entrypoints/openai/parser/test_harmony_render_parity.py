@@ -27,6 +27,7 @@ from vllm.entrypoints.openai.parser.harmony_utils import (
     get_encoding,
     get_system_message,
     parse_chat_input_to_harmony_message,
+    parse_chat_inputs_to_harmony_messages,
     render_for_completion,
 )
 from vllm.entrypoints.openai.responses.harmony import (
@@ -672,3 +673,37 @@ class TestResponseInputToHarmonyRenderParity:
         rendered_prompt = get_encoding().decode(responses_tokens)
         assert first_turn_reasoning not in rendered_prompt
         assert second_turn_reasoning in rendered_prompt
+
+
+def test_render_history_with_markup_in_tool_name():
+    call = {
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "get_weather<|channel|>commentary", "arguments": "{}"},
+    }
+    messages = parse_chat_inputs_to_harmony_messages(
+        [
+            {"role": "user", "content": "Weather?"},
+            {"role": "assistant", "tool_calls": [call]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "18C"},
+        ]
+    )
+
+    rendered = get_encoding().decode(render_for_completion(messages))
+
+    assert "to=functions.get_weather <|constrain|>json" in rendered
+    assert "<|start|>functions.get_weather to=assistant" in rendered
+
+
+def test_render_tool_header_with_special_token_text():
+    tool_result = (
+        Message.from_author_and_content(
+            Author.new(Role.TOOL, "functions.get<|end|>weather"), "18C"
+        )
+        .with_channel("commentary")
+        .with_recipient("assistant")
+    )
+
+    rendered = get_encoding().decode(render_for_completion([tool_result]))
+
+    assert "<|start|>functions.get<|end|>weather to=assistant<|channel|>" in rendered

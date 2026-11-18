@@ -589,6 +589,12 @@ def build_harmony_preamble(
     return messages
 
 
+def _strip_harmony_markup(name: str) -> str:
+    """Drop a Harmony header tail such as `<|channel|>commentary` that older
+    servers left in returned tool names, so the model doesn't copy it."""
+    return name.split("<|", 1)[0] or name
+
+
 def parse_chat_input_to_harmony_message(
     chat_msg, tool_id_names: dict[str, str] | None = None
 ) -> list[Message]:
@@ -622,7 +628,7 @@ def parse_chat_input_to_harmony_message(
 
         for call in tool_calls:
             func = call.get("function", {})
-            name = func.get("name", "")
+            name = _strip_harmony_markup(func.get("name", ""))
             arguments = func.get("arguments", "") or ""
             msg = Message.from_role_and_content(Role.ASSISTANT, arguments)
             msg = msg.with_channel("commentary")
@@ -637,7 +643,9 @@ def parse_chat_input_to_harmony_message(
     # Tool role message (tool output)
     if role == "tool":
         tool_call_id = chat_msg.get("tool_call_id", "")
-        name = tool_id_names.get(tool_call_id) or chat_msg.get("name") or ""
+        name = _strip_harmony_markup(
+            tool_id_names.get(tool_call_id) or chat_msg.get("name") or ""
+        )
         content = flatten_input_text_content(chat_msg.get("content")) or ""
 
         msg = (
@@ -761,9 +769,13 @@ def _use_gpt_oss_tool_headers(token_ids: list[int]) -> list[int]:
             channel, recipient = channel_and_recipient.split(" to=", 1)
             tool_result_header = (
                 [start]
-                + encoding.encode(f"{author} to={recipient.rstrip()}")
+                + encoding.encode(
+                    f"{author} to={recipient.rstrip()}", disallowed_special=()
+                )
                 + [channel_token]
-                + encoding.encode(channel + (" " if content_type else ""))
+                + encoding.encode(
+                    channel + (" " if content_type else ""), disallowed_special=()
+                )
                 + content_type
                 + [message]
             )
@@ -796,9 +808,9 @@ def _use_gpt_oss_tool_headers(token_ids: list[int]) -> list[int]:
 
         legacy_header = (
             [start]
-            + encoding.encode(f"assistant to={recipient}")
+            + encoding.encode(f"assistant to={recipient}", disallowed_special=())
             + [channel_token]
-            + encoding.encode(f"{channel} {content_type}")
+            + encoding.encode(f"{channel} {content_type}", disallowed_special=())
             + [message]
         )
         result[index : header_end + 1] = legacy_header
