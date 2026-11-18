@@ -1622,12 +1622,19 @@ class TestStopStrings:
         assert request.stop == []
         assert request._content_stop == ["."]
 
+    def test_empty_stop_string_is_left_to_validation(self, harmony_parser):
+        request = self._request(harmony_parser, ["", "."])
+        assert request.stop == ["", "."]
+        assert request._content_stop == []
+
     @pytest.mark.parametrize(
         ("stop", "include", "content", "matched"),
         [
             (["."], False, "Sunny in Paris", "."),
             (["."], True, "Sunny in Paris.", "."),
             (["Paris", "Sunny"], False, "", "Sunny"),
+            (["Paris. Bring", "in"], False, "Sunny ", "in"),
+            (["in Paris", "Paris"], False, "Sunny ", "in Paris"),
             (["Rome"], False, "Sunny in Paris. Bring a hat.", None),
         ],
     )

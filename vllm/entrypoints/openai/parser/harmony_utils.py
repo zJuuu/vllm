@@ -208,6 +208,22 @@ def _schema_for_harmony(
     if not isinstance(schema, dict):
         return schema
     schema = dict(schema)
+    for key in ("anyOf", "oneOf"):
+        variants = schema.get(key)
+        if (
+            isinstance(variants, list)
+            and len(variants) == 2
+            and {"type": "null"} in variants
+        ):
+            # Optional[X]: render X, keeping its enum and constraints.
+            value = next(v for v in variants if v != {"type": "null"})
+            if isinstance(value, dict):
+                rest = {k: v for k, v in schema.items() if k != key}
+                optional = _schema_for_harmony({**value, **rest}, defs, seen_refs)
+                optional["description"] = "; ".join(
+                    filter(None, [optional.get("description"), "or null"])
+                )
+                return optional
     notes: list[str] = []
 
     ref = schema.pop("$ref", None)
@@ -239,18 +255,8 @@ def _schema_for_harmony(
         if not isinstance(variants, list):
             continue
         variants = [_schema_for_harmony(v, defs, seen_refs) for v in variants]
-        values = [
-            v for v in variants if not (isinstance(v, dict) and v == {"type": "null"})
-        ]
         types = [v.get("type") for v in variants if isinstance(v, dict)]
-        if len(values) == 1 and len(variants) == 2 and isinstance(values[0], dict):
-            # Optional[X]: render X, keeping its enum and constraints.
-            value_description = values[0].get("description")
-            schema = {**values[0], **schema}
-            if value_description and value_description != schema.get("description"):
-                notes.append(value_description)
-            notes.append("or null")
-        elif len(types) == len(variants) and all(
+        if len(types) == len(variants) and all(
             isinstance(t, str) and t not in ("object", "array") for t in types
         ):
             schema["type"] = types

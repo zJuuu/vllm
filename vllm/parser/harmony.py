@@ -381,7 +381,10 @@ class HarmonyParser(DelegatingParser):
         pending = self._final_pending + text
         matches = [(pending.find(s), s) for s in stop if s in pending]
         if matches:
-            index, self.matched_stop = min(matches)
+            # The stop string that completes first, as the engine picks it.
+            _, index, self.matched_stop = min(
+                (index + len(s), index, s) for index, s in matches
+            )
             self._final_pending = ""
             if request.include_stop_str_in_output:
                 index += len(self.matched_stop)
@@ -519,12 +522,13 @@ class HarmonyParser(DelegatingParser):
         self, request: ChatCompletionRequest | ResponsesRequest
     ) -> ChatCompletionRequest | ResponsesRequest:
         if isinstance(request, ChatCompletionRequest) and request.stop:
+            stop = [request.stop] if isinstance(request.stop, str) else request.stop
             # The engine matches stop strings in reasoning, call headers and
-            # arguments too; apply them to the final answer only.
-            request._content_stop = (
-                [request.stop] if isinstance(request.stop, str) else list(request.stop)
-            )
-            request.stop = []
+            # arguments too; apply them to the final answer only. An empty one
+            # is left for the engine to reject.
+            if "" not in stop:
+                request._content_stop = list(stop)
+                request.stop = []
         if (
             request.tools
             and self.tool_parser is not None

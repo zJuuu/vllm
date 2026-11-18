@@ -231,6 +231,24 @@ class TestToolParametersForHarmony:
             "description": "or null",
         }
 
+    def test_optional_integer_notes_once(self):
+        rendered = _rendered_parameters(
+            {
+                "type": "object",
+                "properties": {
+                    "qty": {
+                        "anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]
+                    }
+                },
+            }
+        )
+
+        assert rendered["properties"]["qty"] == {
+            "type": "integer",
+            "minimum": 1,
+            "description": "integer; minimum: 1; or null",
+        }
+
     def test_request_parameters_are_not_modified(self):
         parameters = {"properties": {"version": {"const": "v2"}}}
         _rendered_parameters(parameters)
