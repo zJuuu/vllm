@@ -413,6 +413,55 @@ class TestGemma4ChatTemplate:
         assert "<|audio|>" in result
         assert "<|video|>" in result
 
+    def test_content_renders_before_tool_calls(self, gemma4_template):
+        messages = [
+            {"role": "user", "content": "Weather in London?"},
+            {
+                "role": "assistant",
+                "content": "Let me check.",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": {"city": "London"},
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "Rainy"},
+        ]
+        result = _render(gemma4_template, messages, add_generation_prompt=True)
+        assert result.endswith(
+            "<channel|>Let me check.<|tool_call>call:get_weather{"
+            'city:<|"|>London<|"|>}<tool_call|><|tool_response>'
+            'response:get_weather{value:<|"|>Rainy<|"|>}<tool_response|>'
+        )
+
+    def test_turn_closes_before_user_after_tool_response(self, gemma4_template):
+        messages = [
+            {"role": "user", "content": "Weather in London?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": {"city": "London"},
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "Rainy"},
+            {"role": "user", "content": "And Paris?"},
+        ]
+        result = _render(gemma4_template, messages)
+        assert "<tool_response|><turn|>\n<|turn>user\nAnd Paris?" in result
+
     def test_schema_keywords_rendered(self, gemma4_template):
         tools = [
             {
