@@ -78,6 +78,24 @@ def test_render_function_call_and_result_headers():
     ) in rendered
 
 
+def test_render_tool_result_header_with_content_type():
+    tool_result = (
+        Message.from_author_and_content(
+            Author.new(Role.TOOL, "functions.get_weather"), '{"temp": 18}'
+        )
+        .with_channel("commentary")
+        .with_recipient("assistant")
+        .with_content_type("json")
+    )
+
+    rendered = get_encoding().decode(render_for_completion([tool_result]))
+
+    assert (
+        "<|start|>functions.get_weather to=assistant<|channel|>commentary "
+        "<|constrain|>json<|message|>"
+    ) in rendered
+
+
 # Use a fixed date so the system message is deterministic across both paths.
 _DATE = "2025-01-01"
 

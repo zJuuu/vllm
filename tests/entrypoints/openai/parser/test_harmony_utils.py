@@ -209,6 +209,28 @@ class TestToolParametersForHarmony:
             ' | {"type":"object","properties":{"room":{"type":"string"}}}'
         )
 
+    def test_optional_enum(self):
+        rendered = _rendered_parameters(
+            {
+                "type": "object",
+                "properties": {
+                    "unit": {
+                        "anyOf": [
+                            {"type": "string", "enum": ["c", "f"]},
+                            {"type": "null"},
+                        ],
+                        "description": None,
+                    }
+                },
+            }
+        )
+
+        assert rendered["properties"]["unit"] == {
+            "type": "string",
+            "enum": ["c", "f"],
+            "description": "or null",
+        }
+
     def test_request_parameters_are_not_modified(self):
         parameters = {"properties": {"version": {"const": "v2"}}}
         _rendered_parameters(parameters)
@@ -923,16 +945,14 @@ class TestParseChatInputToHarmonyMessage:
                         call("call_2", "get_time"),
                     ],
                 },
-                {"role": "tool", "tool_call_id": "call_2", "content": "10:00"},
-                {"role": "tool", "content": "18C"},
-                {"role": "tool", "name": "get_weather", "content": "19C"},
+                {"role": "tool", "name": "get_weather", "content": "18C"},
+                {"role": "tool", "content": "10:00"},
             ]
         )
 
         assert [m.author.name for m in messages if m.author.role == "tool"] == [
+            "functions.get_weather",
             "functions.get_time",
-            "functions.get_weather",
-            "functions.get_weather",
         ]
 
     def test_tool_message_with_array_content(self):

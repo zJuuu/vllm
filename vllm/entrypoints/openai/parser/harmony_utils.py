@@ -239,8 +239,18 @@ def _schema_for_harmony(
         if not isinstance(variants, list):
             continue
         variants = [_schema_for_harmony(v, defs, seen_refs) for v in variants]
+        values = [
+            v for v in variants if not (isinstance(v, dict) and v == {"type": "null"})
+        ]
         types = [v.get("type") for v in variants if isinstance(v, dict)]
-        if len(types) == len(variants) and all(
+        if len(values) == 1 and len(variants) == 2 and isinstance(values[0], dict):
+            # Optional[X]: render X, keeping its enum and constraints.
+            value_description = values[0].get("description")
+            schema = {**values[0], **schema}
+            if value_description and value_description != schema.get("description"):
+                notes.append(value_description)
+            notes.append("or null")
+        elif len(types) == len(variants) and all(
             isinstance(t, str) and t not in ("object", "array") for t in types
         ):
             schema["type"] = types
@@ -274,7 +284,7 @@ def _schema_for_harmony(
         )
 
     if notes:
-        description = " ".join(str(schema.get("description", "")).split())
+        description = " ".join(str(schema.get("description") or "").split())
         schema["description"] = "; ".join(filter(None, [description, *notes]))
     return schema
 
@@ -375,9 +385,14 @@ def parse_chat_inputs_to_harmony_messages(chat_msgs: list) -> list[Message]:
             ]
         elif role == "tool":
             tool_call_id = chat_msg.get("tool_call_id")
+            name = chat_msg.get("name")
             if tool_call_id in tool_id_names:
                 unanswered = [c for c in unanswered if c[0] != tool_call_id]
-            elif not chat_msg.get("name") and unanswered:
+            elif name:
+                answered = next((c for c in unanswered if c[1] == name), None)
+                if answered is not None:
+                    unanswered.remove(answered)
+            elif unanswered:
                 chat_msg = {**chat_msg, "name": unanswered.pop(0)[1]}
         msgs.extend(parse_chat_input_to_harmony_message(chat_msg, tool_id_names))
 
@@ -664,8 +679,13 @@ def _use_gpt_oss_tool_headers(token_ids: list[int]) -> list[int]:
 
         author = encoding.decode(result[index + 1 : channel_index])
         if author != "assistant":
+            content_type = result[channel_index + 1 : header_end]
+            if constrain in content_type:
+                content_type = content_type[content_type.index(constrain) :]
+            else:
+                content_type = []
             channel_and_recipient = encoding.decode(
-                result[channel_index + 1 : header_end]
+                result[channel_index + 1 : header_end - len(content_type)]
             )
             if " to=" not in channel_and_recipient:
                 index = header_end + 1
@@ -673,9 +693,10 @@ def _use_gpt_oss_tool_headers(token_ids: list[int]) -> list[int]:
             channel, recipient = channel_and_recipient.split(" to=", 1)
             tool_result_header = (
                 [start]
-                + encoding.encode(f"{author} to={recipient}")
+                + encoding.encode(f"{author} to={recipient.rstrip()}")
                 + [channel_token]
-                + encoding.encode(channel)
+                + encoding.encode(channel + (" " if content_type else ""))
+                + content_type
                 + [message]
             )
             result[index : header_end + 1] = tool_result_header

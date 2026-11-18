@@ -229,8 +229,9 @@ class TestFlush:
         assert harmony_parser.flush() == []
         assert_parser_is_reset(harmony_parser)
 
-    def test_flush_recovers_plain_text(self, harmony_parser):
-        harmony_parser.process_chunk(encode_output("Hello"))
+    @pytest.mark.parametrize("output", ["Hello", "Hello<|return|>"])
+    def test_flush_recovers_plain_text(self, harmony_parser, output):
+        harmony_parser.process_chunk(encode_output(output))
         flushed_segments = harmony_parser.flush()
         assert len(flushed_segments) == 2
         assert flushed_segments[0].channel == "final"
@@ -574,16 +575,23 @@ class TestParse:
         ]
 
 
-def quoted_markup_then_tool_call() -> list[int]:
+def quoted_markup_then_tool_call(quoted_recipient: bool = False) -> list[int]:
     # Reasoning quotes the user's "a<|call|>b<|end|>c" as text; the structural
     # tag takes the quoted "<|end|><|start|>assistant" as the message end, and
     # the model opens the tool call header with real tokens.
     as_text = get_encoding().encode
     return [
         *encode_output("<|channel|>analysis<|message|>Save a"),
-        *as_text("<|call|>b<|end|><|start|>assistant", disallowed_special=()),
+        *as_text(
+            "<|call|>b<|end|><|start|>assistant"
+            + (" to=functions.save_note" if quoted_recipient else ""),
+            disallowed_special=(),
+        ),
         *encode_output(
-            "<|channel|>commentary to=functions.save_note <|constrain|>json<|message|>"
+            "<|channel|>commentary <|constrain|>json<|message|>"
+            if quoted_recipient
+            else "<|channel|>commentary to=functions.save_note <|constrain|>json"
+            "<|message|>"
         ),
         *as_text('{"text": "a<|call|>b<|end|>c"}', disallowed_special=()),
         *encode_output("<|call|>"),
@@ -591,12 +599,15 @@ def quoted_markup_then_tool_call() -> list[int]:
 
 
 class TestQuotedMarkup:
-    def test_parse(self, harmony_parser, chat_request):
+    @pytest.mark.parametrize("quoted_recipient", [False, True])
+    def test_parse(self, harmony_parser, chat_request, quoted_recipient):
         reasoning, content, tool_calls = harmony_parser.parse(
-            "", chat_request, model_output_token_ids=quoted_markup_then_tool_call()
+            "",
+            chat_request,
+            model_output_token_ids=quoted_markup_then_tool_call(quoted_recipient),
         )
 
-        assert reasoning == "Save a<|call|>b<|end|><|start|>assistant"
+        assert reasoning.startswith("Save a<|call|>b<|end|><|start|>assistant")
         assert content is None
         assert tool_call_tuples(tool_calls) == [
             ("save_note", '{"text": "a<|call|>b<|end|>c"}')

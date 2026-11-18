@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum, auto
@@ -150,12 +151,13 @@ class HarmonyParser(DelegatingParser):
             msg = self._poll_completed_message()
         except HarmonyError:
             msg = None
-            encoding = get_encoding()
-            # A Harmony header cut off by max_tokens or a stop string carries
-            # control tokens and no content; only plain text is recovered.
+            header_tokens = get_encoding().encode(
+                "<|start|><|channel|><|constrain|><|message|>", allowed_special="all"
+            )
+            # A Harmony header cut off by max_tokens or a stop string has no
+            # content; only output without header tokens is recovered as text.
             if not any(
-                encoding.is_special_token(token_id)
-                for token_id in self._current_message_tokens
+                token_id in header_tokens for token_id in self._current_message_tokens
             ):
                 logger.warning(
                     "Harmony parser ended in a non-terminal state; returning the "
@@ -163,7 +165,9 @@ class HarmonyParser(DelegatingParser):
                 )
 
                 final_channel = "final"
-                text = self.model_tokenizer.decode(self._current_message_tokens)
+                text = self.model_tokenizer.decode(
+                    self._current_message_tokens, skip_special_tokens=True
+                )
                 segments.append(
                     Segment(
                         channel=final_channel,
@@ -397,7 +401,8 @@ class HarmonyParser(DelegatingParser):
         A message that quotes "<|end|><|start|>assistant" as text satisfies a
         structural tag's message end, and the model then opens the next header
         with real tokens. The Harmony parser would keep that header and the
-        tool call after it as text of the quoting message.
+        tool call after it as text of the quoting message. A recipient quoted
+        after "assistant" belongs to the new header.
         """
         encoding = get_encoding()
         channel = encoding.encode("<|channel|>", allowed_special="all")[0]
@@ -406,8 +411,10 @@ class HarmonyParser(DelegatingParser):
                 token_id == channel
                 and self._harmony_parser.state == StreamState.CONTENT
             ):
+                quoted = _QUOTED_HEADER.search(self._harmony_parser.current_content)
+                yield from encoding.encode("<|end|><|start|>", allowed_special="all")
                 yield from encoding.encode(
-                    "<|end|><|start|>assistant", allowed_special="all"
+                    "assistant" + (quoted.group(1) or "" if quoted else "")
                 )
             yield token_id
 
@@ -517,6 +524,7 @@ _FUNCTION_CALL_BEGINS = [
     "{channel} to=functions.{name}{constrain}<|message|>",
 ]
 _ANY_CONTENT = AnyTextFormat()
+_QUOTED_HEADER = re.compile(r"<\|start\|>assistant( to=\S+)?\s*$")
 
 
 def _assemble_tag(
