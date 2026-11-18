@@ -24,7 +24,7 @@ from vllm.entrypoints.openai.parser.harmony_utils import (
 from vllm.entrypoints.openai.responses.protocol import ResponsesRequest
 from vllm.parser.harmony import HarmonyParser
 from vllm.parser.parser_manager import ParserManager
-from vllm.sampling_params import StructuredOutputsParams
+from vllm.sampling_params import RequestOutputKind, StructuredOutputsParams
 from vllm.v1.structured_output.backend_types import StructuredOutputOptions
 from vllm.v1.structured_output.backend_xgrammar import XgrammarBackend
 
@@ -1622,6 +1622,12 @@ class TestStopStrings:
         request = self._request(harmony_parser, ".")
         assert request.stop == []
         assert request._content_stop == ["."]
+
+    def test_non_streamed_output_is_watched(self, harmony_parser):
+        request = self._request(harmony_parser, ".")
+        assert request.to_sampling_params(16, {}).output_kind == (
+            RequestOutputKind.CUMULATIVE
+        )
 
     def test_empty_stop_string_is_left_to_validation(self, harmony_parser):
         request = self._request(harmony_parser, ["", "."])

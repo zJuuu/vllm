@@ -826,7 +826,12 @@ class ChatCompletionRequest(OpenAIBaseModel):
             spaces_between_special_tokens=self.spaces_between_special_tokens,
             include_stop_str_in_output=self.include_stop_str_in_output,
             output_kind=(
-                RequestOutputKind.DELTA if self.stream else RequestOutputKind.FINAL_ONLY
+                RequestOutputKind.DELTA
+                if self.stream
+                # A parser applying the stop strings watches the output as it grows.
+                else RequestOutputKind.CUMULATIVE
+                if self._content_stop
+                else RequestOutputKind.FINAL_ONLY
             ),
             stream_interval=self.stream_interval,
             structured_outputs=self.extract_structured_outputs(),

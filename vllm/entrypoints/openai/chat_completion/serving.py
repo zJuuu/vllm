@@ -985,10 +985,31 @@ class OpenAIServingChat(GenerateBaseServing):
     ) -> ErrorResponse | ChatCompletionResponse:
         created_time = int(time.time())
         final_res: RequestOutput | None = None
+        stop_watcher = (
+            self._make_parser(
+                request, tokenizer, self._effective_chat_template_kwargs(request)
+            )
+            if parser is not None and request._content_stop and request.n == 1
+            else None
+        )
+        num_watched_tokens = 0
 
         try:
             async for res in result_generator:
                 final_res = res
+                if stop_watcher is None:
+                    continue
+                token_ids = res.outputs[0].token_ids
+                stop_watcher.parse_delta(
+                    delta_text="",
+                    delta_token_ids=list(token_ids[num_watched_tokens:]),
+                    request=request,
+                    finished=False,
+                )
+                num_watched_tokens = len(token_ids)
+                if stop_watcher.matched_stop is not None:
+                    # The answer is cut here; stop generating the rest.
+                    break
         except asyncio.CancelledError:
             return self.create_error_response("Client disconnected")
 
