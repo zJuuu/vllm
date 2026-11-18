@@ -186,6 +186,7 @@ def recall_tool_call_reasoning(tool_calls: list[dict[str, Any]]) -> str | None:
         if entry is not None and entry[0] == _call_key(
             function.get("name"), function.get("arguments")
         ):
+            _TOOL_CALL_REASONING.move_to_end(tool_call["id"])
             return entry[1]
     return None
 
