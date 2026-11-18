@@ -519,3 +519,79 @@ class TestGemma4ChatTemplate:
             'item:{properties:{sku:{type:<|"|>STRING<|"|>}},'
             'required:[<|"|>sku<|"|>],type:<|"|>OBJECT<|"|>}'
         ) in result
+
+    def test_recursive_ref_expands_once_per_path(self, gemma4_template):
+        node = {
+            "type": "object",
+            "properties": {
+                "and": {"type": "array", "items": {"$ref": "#/$defs/Node"}},
+                "or": {"type": "array", "items": {"$ref": "#/$defs/Node"}},
+                "not": {"$ref": "#/$defs/Node"},
+            },
+        }
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search",
+                    "description": "Search",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"filter": {"$ref": "#/$defs/Node"}},
+                        "$defs": {"Node": node},
+                    },
+                },
+            }
+        ]
+        result = _render(
+            gemma4_template,
+            [{"role": "user", "content": "Find"}],
+            tools=tools,
+            add_generation_prompt=True,
+        )
+        assert result.count("properties:{and:") == 1
+        assert len(result) < 2000
+
+    def test_parameters_without_type_are_closed(self, gemma4_template):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "ping",
+                    "description": "Ping",
+                    "parameters": {"properties": {"host": {"type": "string"}}},
+                },
+            }
+        ]
+        result = _render(
+            gemma4_template,
+            [{"role": "user", "content": "Ping"}],
+            tools=tools,
+            add_generation_prompt=True,
+        )
+        assert (
+            'parameters:{properties:{host:{type:<|"|>STRING<|"|>}},'
+            'type:<|"|>OBJECT<|"|>}}<tool|>'
+        ) in result
+
+    def test_legacy_tool_responses_keep_content_after_responses(self, gemma4_template):
+        messages = [
+            {"role": "user", "content": "Weather in London?"},
+            {
+                "role": "assistant",
+                "content": "It is rainy.",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": {"city": "London"},
+                        }
+                    }
+                ],
+                "tool_responses": [
+                    {"name": "get_weather", "response": {"weather": "rain"}}
+                ],
+            },
+        ]
+        result = _render(gemma4_template, messages)
+        assert "<tool_response|>It is rainy.<turn|>" in result

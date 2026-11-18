@@ -1,7 +1,8 @@
-{%- macro format_schema(schema, defs, depth) -%}
+{%- macro format_schema(schema, defs, seen) -%}
     {%- set ref_name = schema['$ref'].split('/') | last if schema['$ref'] is string else none -%}
-    {%- if ref_name and defs and ref_name in defs and depth < 8 -%}
+    {%- if ref_name and defs and ref_name in defs and ref_name not in seen -%}
         {%- set value = defs[ref_name] -%}
+        {%- set seen = seen + [ref_name] -%}
     {%- else -%}
         {%- set value = schema -%}
     {%- endif -%}
@@ -32,13 +33,13 @@
         {%- endif -%}
     {%- endfor -%}
     {%- if value['items'] is mapping -%}
-        {%- set ns.out = ns.out + (',' if ns.out else '') + 'items:{' + format_schema(value['items'], defs, depth + 1) + '}' -%}
+        {%- set ns.out = ns.out + (',' if ns.out else '') + 'items:{' + format_schema(value['items'], defs, seen) + '}' -%}
     {%- endif -%}
     {%- for key in ['anyOf', 'oneOf', 'allOf'] -%}
         {%- if value[key] is defined and value[key] is sequence and value[key] is not string -%}
             {%- set ns_alt = namespace(out='') -%}
             {%- for alt in value[key] if alt is mapping -%}
-                {%- set ns_alt.out = ns_alt.out + (',' if not loop.first else '') + '{' + format_schema(alt, defs, depth + 1) + '}' -%}
+                {%- set ns_alt.out = ns_alt.out + (',' if not loop.first else '') + '{' + format_schema(alt, defs, seen) + '}' -%}
             {%- endfor -%}
             {%- set ns.out = ns.out + (',' if ns.out else '') + key + ':[' + ns_alt.out + ']' -%}
         {%- endif -%}
@@ -47,13 +48,13 @@
         {%- set ns.out = ns.out + (',' if ns.out else '') + 'nullable:true' -%}
     {%- endif -%}
     {%- if value['properties'] is mapping -%}
-        {%- set ns.out = ns.out + (',' if ns.out else '') + 'properties:{' + format_parameters(value['properties'], defs, depth + 1) + '}' -%}
+        {%- set ns.out = ns.out + (',' if ns.out else '') + 'properties:{' + format_parameters(value['properties'], defs, seen) + '}' -%}
     {%- endif -%}
     {%- if value['required'] is defined and value['required'] is sequence and value['required'] is not string and value['required'] | length > 0 -%}
         {%- set ns.out = ns.out + (',' if ns.out else '') + 'required:' + format_argument(value['required']) -%}
     {%- endif -%}
     {%- if value['additionalProperties'] is mapping -%}
-        {%- set ns.out = ns.out + (',' if ns.out else '') + 'additionalProperties:{' + format_schema(value['additionalProperties'], defs, depth + 1) + '}' -%}
+        {%- set ns.out = ns.out + (',' if ns.out else '') + 'additionalProperties:{' + format_schema(value['additionalProperties'], defs, seen) + '}' -%}
     {%- elif value['additionalProperties'] is false -%}
         {%- set ns.out = ns.out + (',' if ns.out else '') + 'additionalProperties:false' -%}
     {%- endif -%}
@@ -64,14 +65,14 @@
     {%- endif -%}
     {{- ns.out -}}
 {%- endmacro -%}
-{%- macro format_parameters(properties, defs, depth) -%}
+{%- macro format_parameters(properties, defs, seen) -%}
     {%- set ns = namespace(found_first=false) -%}
     {%- for key, value in properties | dictsort -%}
         {%- if ns.found_first %},{% endif -%}
         {%- set ns.found_first = true -%}
         {{ key }}:{
         {%- if value is mapping -%}
-            {{- format_schema(value, defs, depth) -}}
+            {{- format_schema(value, defs, seen) -}}
         {%- endif -%}
         }
     {%- endfor -%}
@@ -82,7 +83,7 @@
     {%- if params -%}
         ,parameters:{
         {%- if params['properties'] -%}
-            properties:{ {{- format_parameters(params['properties'], params['$defs'] or params['definitions'], 0) -}} },
+            properties:{ {{- format_parameters(params['properties'], params['$defs'] or params['definitions'], []) -}} },
         {%- endif -%}
         {%- if params['required'] -%}
             required:[
@@ -92,9 +93,7 @@
             {%- endfor -%}
             ],
         {%- endif -%}
-        {%- if params['type'] -%}
-            type:<|"|>{{- params['type'] | upper -}}<|"|>}
-        {%- endif -%}
+        type:<|"|>{{- (params['type'] or 'object') | upper -}}<|"|>}
     {%- endif -%}
     {%- if 'response' in tool_data['function'] -%}
         {%- set response_declaration = tool_data['function']['response'] -%}
@@ -257,8 +256,11 @@
             {%- endif -%}
             {%- endset -%}
 
-            {%- if message.get('tool_calls') -%}
+            {%- set content_before_calls = message.get('tool_calls') and not message.get('tool_responses') -%}
+            {%- if content_before_calls -%}
                 {{- captured_content -}}
+            {%- endif -%}
+            {%- if message.get('tool_calls') -%}
                 {%- for tool_call in message.get('tool_calls') -%}
                     {%- set function = tool_call['function'] -%}
                     {{- '<|tool_call>call:' + function['name'] + '{' -}}
@@ -336,10 +338,10 @@
                 {%- endfor -%}
             {%- endif -%}
 
-            {%- if not message.get('tool_calls') -%}
+            {%- if not content_before_calls -%}
                 {{- captured_content -}}
             {%- endif -%}
-            {%- set has_content = not message.get('tool_calls') and captured_content | trim | length > 0 -%}
+            {%- set has_content = not content_before_calls and captured_content | trim | length > 0 -%}
 
         {#- Forward-scan: find next non-tool message role for continuation detection -#}
         {%- set next_nt = namespace(role=None, found=false) -%}
