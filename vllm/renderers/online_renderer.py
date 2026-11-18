@@ -436,6 +436,10 @@ class OnlineRenderer:
                 instructions, request_input = extract_instructions_from_messages(
                     request_input
                 )
+            if forbids_tool_calls(request):
+                instructions = "\n\n".join(
+                    filter(None, [instructions, NO_TOOL_CALL_INSTRUCTIONS])
+                )
             descriptions = self._get_harmony_builtin_tool_descriptions(
                 request.tools,
                 tool_types,
