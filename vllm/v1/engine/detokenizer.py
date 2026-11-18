@@ -3,6 +3,7 @@
 import sys
 from abc import ABC, abstractmethod
 from bisect import bisect_left
+from collections.abc import Sequence
 
 import tokenizers.decoders
 from tokenizers import Tokenizer
@@ -83,6 +84,10 @@ class BaseIncrementalDetokenizer(IncrementalDetokenizer, ABC):
             self.stop = params.stop
         self.min_tokens = params.min_tokens
         self.include_stop_str_in_output = params.include_stop_str_in_output
+        # Special tokens kept in the output text, and their text spans: a stop
+        # string must not match part of one (e.g. `"` inside `<|"|>`).
+        self.special_token_ids: frozenset[int] = frozenset()
+        self.special_spans: list[tuple[int, int]] = []
 
         # Number of chars to hold back when stop strings are to be excluded
         # from streamed output.
@@ -121,7 +126,10 @@ class BaseIncrementalDetokenizer(IncrementalDetokenizer, ABC):
         token_offsets = [len(self.output_text)] if self.stop else None
         for new_token_id in new_token_ids:
             self.token_ids.append(new_token_id)
+            start = len(self.output_text)
             self.output_text += self.decode_next(new_token_id)
+            if new_token_id in self.special_token_ids:
+                self.special_spans.append((start, len(self.output_text)))
             if token_offsets is not None:
                 token_offsets.append(len(self.output_text))
 
@@ -141,6 +149,7 @@ class BaseIncrementalDetokenizer(IncrementalDetokenizer, ABC):
                 new_char_count=len(self.output_text) - stop_check_offset,
                 stop=self.stop,
                 include_in_output=self.include_stop_str_in_output,
+                special_spans=self.special_spans,
             )
             if stop is not None:
                 stop_string, truncate_to = stop
@@ -187,6 +196,8 @@ class FastIncrementalDetokenizer(BaseIncrementalDetokenizer):
 
         self.request_id = request.request_id
         self.skip_special_tokens = sampling_params.skip_special_tokens
+        if self.stop and not self.skip_special_tokens:
+            self.special_token_ids = frozenset(tokenizer.all_special_ids)
 
         self.tokenizer: Tokenizer = tokenizer._tokenizer
 
@@ -294,6 +305,8 @@ class SlowIncrementalDetokenizer(BaseIncrementalDetokenizer):
 
         self.skip_special_tokens = params.skip_special_tokens
         self.spaces_between_special_tokens = params.spaces_between_special_tokens
+        if self.stop and not self.skip_special_tokens:
+            self.special_token_ids = frozenset(tokenizer.all_special_ids)
 
     @property
     def output_token_ids(self) -> list[int]:
@@ -327,6 +340,7 @@ def check_stop_strings(
     new_char_count: int,
     stop: list[str],
     include_in_output: bool,
+    special_spans: Sequence[tuple[int, int]] = (),
 ) -> tuple[str, int] | None:
     """Check if any stop strings are matched and truncate sequence
     output text accordingly.
@@ -342,6 +356,9 @@ def check_stop_strings(
     step), the stop string that completes earliest in the text is selected,
     so the result matches appending one token at a time. Ties are broken by
     stop-list order.
+
+    A match that starts or ends inside one of `special_spans`, the text of a
+    special token in `output_text`, is skipped.
     """
     if not new_char_count or not stop:
         return None
@@ -353,6 +370,10 @@ def check_stop_strings(
         stop_string_len = len(stop_str)
         # Avoid searching already-searched text.
         stop_index = output_text.find(stop_str, 1 - new_char_count - stop_string_len)
+        while stop_index != -1 and _splits_special_token(
+            stop_index, stop_index + stop_string_len, special_spans
+        ):
+            stop_index = output_text.find(stop_str, stop_index + 1)
         if stop_index == -1:
             continue
 
@@ -375,3 +396,14 @@ def check_stop_strings(
 
     # Truncate the output text to the beginning of the stop string.
     return best_stop_str, best_stop_index
+
+
+def _splits_special_token(
+    start: int, end: int, special_spans: Sequence[tuple[int, int]]
+) -> bool:
+    for span_start, span_end in reversed(special_spans):
+        if span_end <= start:
+            return False
+        if span_start < start < span_end or span_start < end < span_end:
+            return True
+    return False

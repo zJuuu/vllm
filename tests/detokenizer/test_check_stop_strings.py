@@ -74,3 +74,26 @@ def test_no_match_and_empty_inputs_return_none():
     assert check_stop_strings("hello", 5, ["zzz"], include_in_output=False) is None
     assert check_stop_strings("hello", 0, ["h"], include_in_output=False) is None
     assert check_stop_strings("hello", 5, [], include_in_output=False) is None
+
+
+def test_stop_inside_special_token_text_is_skipped():
+    # `"` inside the special token `<|"|>` (span 12-17) must not match; the
+    # quote after it does.
+    text = 'call:f{city:<|"|>Paris"'
+    spans = [(12, 17)]
+
+    assert check_stop_strings(
+        text, len(text), ['"'], include_in_output=False, special_spans=spans
+    ) == ('"', 22)
+
+
+def test_stop_equal_to_special_token_text_matches():
+    text = "Done.<turn|>"
+
+    assert check_stop_strings(
+        text,
+        len("<turn|>"),
+        ["<turn|>"],
+        include_in_output=False,
+        special_spans=[(5, 12)],
+    ) == ("<turn|>", 5)
