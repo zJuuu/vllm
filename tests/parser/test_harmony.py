@@ -574,6 +574,54 @@ class TestParse:
         ]
 
 
+def quoted_markup_then_tool_call() -> list[int]:
+    # Reasoning quotes the user's "a<|call|>b<|end|>c" as text; the structural
+    # tag takes the quoted "<|end|><|start|>assistant" as the message end, and
+    # the model opens the tool call header with real tokens.
+    as_text = get_encoding().encode
+    return [
+        *encode_output("<|channel|>analysis<|message|>Save a"),
+        *as_text("<|call|>b<|end|><|start|>assistant", disallowed_special=()),
+        *encode_output(
+            "<|channel|>commentary to=functions.save_note <|constrain|>json<|message|>"
+        ),
+        *as_text('{"text": "a<|call|>b<|end|>c"}', disallowed_special=()),
+        *encode_output("<|call|>"),
+    ]
+
+
+class TestQuotedMarkup:
+    def test_parse(self, harmony_parser, chat_request):
+        reasoning, content, tool_calls = harmony_parser.parse(
+            "", chat_request, model_output_token_ids=quoted_markup_then_tool_call()
+        )
+
+        assert reasoning == "Save a<|call|>b<|end|><|start|>assistant"
+        assert content is None
+        assert tool_call_tuples(tool_calls) == [
+            ("save_note", '{"text": "a<|call|>b<|end|>c"}')
+        ]
+
+    def test_parse_delta(self, gpt_oss_tokenizer, chat_request):
+        parser = HarmonyParser(gpt_oss_tokenizer)
+        token_ids = quoted_markup_then_tool_call()
+        entries = []
+        for i, token_id in enumerate(token_ids):
+            entries += tool_call_entries(
+                parser.parse_delta(
+                    delta_text="",
+                    delta_token_ids=[token_id],
+                    request=chat_request,
+                    finished=i == len(token_ids) - 1,
+                )
+            )
+
+        assert entries[0][:2] == (0, "save_note")
+        assert "".join(args or "" for _, _, args in entries) == (
+            '{"text": "a<|call|>b<|end|>c"}'
+        )
+
+
 class TestParseDelta:
     def test_basic(self, gpt_oss_tokenizer, chat_request):
         parser = HarmonyParser(gpt_oss_tokenizer)

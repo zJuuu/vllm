@@ -4,12 +4,18 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum, auto
 from typing import NamedTuple
 
-from openai_harmony import HarmonyError, Message, Role, StreamableParser
+from openai_harmony import (
+    HarmonyError,
+    Message,
+    Role,
+    StreamableParser,
+    StreamState,
+)
 from xgrammar import StructuralTag
 from xgrammar.openai_tool_call_schema import BuiltinToolParam, FunctionToolParam
 from xgrammar.structural_tag import (
@@ -342,7 +348,7 @@ class HarmonyParser(DelegatingParser):
 
         segments: list[Segment] = []
         reasoning_token_count = 0
-        for token_id in token_ids:
+        for token_id in self._close_message_before_header(token_ids):
             try:
                 self._harmony_parser.process(token_id)
             except HarmonyError as e:
@@ -380,6 +386,26 @@ class HarmonyParser(DelegatingParser):
             segments=segments,
             reasoning_token_count=reasoning_token_count,
         )
+
+    def _close_message_before_header(self, token_ids: Sequence[int]) -> Iterator[int]:
+        """Yield `token_ids`, ending the current message before a `<|channel|>`.
+
+        A message that quotes "<|end|><|start|>assistant" as text satisfies a
+        structural tag's message end, and the model then opens the next header
+        with real tokens. The Harmony parser would keep that header and the
+        tool call after it as text of the quoting message.
+        """
+        encoding = get_encoding()
+        channel = encoding.encode("<|channel|>", allowed_special="all")[0]
+        for token_id in token_ids:
+            if (
+                token_id == channel
+                and self._harmony_parser.state == StreamState.CONTENT
+            ):
+                yield from encoding.encode(
+                    "<|end|><|start|>assistant", allowed_special="all"
+                )
+            yield token_id
 
     def _resync_after_error(self, error: HarmonyError, token_id: int) -> bool:
         """Drop a malformed message and resume at the last `<|start|>` it holds.
