@@ -160,6 +160,22 @@ def test_named_custom_tool_choice_skips_structured_outputs(mock_tokenizer):
     assert request.structured_outputs is None
 
 
+def test_structural_tag_uses_marker_token_ids(mock_tokenizer):
+    request = ChatCompletionRequest(
+        model="gemma4",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=_TOOLS,
+        tool_choice="required",
+    )
+    tag = Gemma4EngineToolParser(mock_tokenizer, tools=_TOOLS).get_structural_tag(
+        request
+    )
+
+    dumped = tag.model_dump()["format"]
+    assert dumped["trigger_tokens"] == [TOOL_CALL_START_ID]
+    assert dumped["tags"][0]["begin"] == {"type": "token", "token": TOOL_CALL_START_ID}
+    assert dumped["tags"][0]["end"] == {"type": "token", "token": TOOL_CALL_END_ID}
+
 
 # ---------------------------------------------------------------------------
 # Unit tests for _parse_gemma4_args (shared parser logic)

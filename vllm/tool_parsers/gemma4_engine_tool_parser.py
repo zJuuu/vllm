@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+from typing import Any
+
 from openai.types.responses import ToolChoiceCustom, ToolChoiceFunction
+from xgrammar import StructuralTag
 
 from vllm.entrypoints.openai.chat_completion.protocol import (
     ChatCompletionNamedToolChoiceParam,
@@ -9,10 +12,44 @@ from vllm.entrypoints.openai.chat_completion.protocol import (
 )
 from vllm.entrypoints.openai.responses.protocol import ResponsesRequest
 from vllm.parser.engine.registered_adapters import Gemma4ParserToolAdapter
+from vllm.tool_parsers.tool_strict_level import ToolStrictLevel
+
+
+def _resolve_tokens(node: Any, vocab: dict[str, int]) -> Any:
+    """Replace token strings in a dumped structural tag with their ids, so
+    the tag compiles without a tokenizer (request validation does)."""
+    if isinstance(node, list):
+        return [_resolve_tokens(item, vocab) for item in node]
+    if not isinstance(node, dict):
+        return node
+    out = {key: _resolve_tokens(value, vocab) for key, value in node.items()}
+    if out.get("type") == "token" and isinstance(out["token"], str):
+        out["token"] = vocab[out["token"]]
+    for key in ("trigger_tokens", "exclude_tokens"):
+        if key in out:
+            out[key] = [vocab[t] if isinstance(t, str) else t for t in out[key]]
+    return out
 
 
 class Gemma4EngineToolParser(Gemma4ParserToolAdapter):  # type: ignore[valid-type, misc]
     supports_required_and_named = False
+    structural_tag_model = "gemma4"
+
+    def get_structural_tag(
+        self,
+        request: ChatCompletionRequest | ResponsesRequest,
+        *,
+        reasoning: bool = False,
+        strict_level: ToolStrictLevel = ToolStrictLevel.AUTO,
+    ) -> StructuralTag | None:
+        tag = super().get_structural_tag(
+            request, reasoning=reasoning, strict_level=strict_level
+        )
+        if tag is None:
+            return None
+        return StructuralTag.model_validate(
+            _resolve_tokens(tag.model_dump(), self.vocab)
+        )
 
     def adjust_request(
         self, request: ChatCompletionRequest | ResponsesRequest

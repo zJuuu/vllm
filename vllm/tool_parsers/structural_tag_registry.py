@@ -30,6 +30,7 @@ from xgrammar.structural_tag import (
     StarFormat,
     TagFormat,
     TagsWithSeparatorFormat,
+    TokenFormat,
     TokenTriggeredTagsFormat,
     TriggeredTagsFormat,
 )
@@ -83,7 +84,7 @@ XGRAMMAR_BUILTIN_STRUCTURAL_TAG_MODELS = frozenset(
     }
 )
 VLLM_BUILTIN_STRUCTURAL_TAG_MODELS = frozenset(
-    {"glm_4_7", "hermes", "hy_v4", "kimi_k3", "longcat", "plamo3"}
+    {"gemma4", "glm_4_7", "hermes", "hy_v4", "kimi_k3", "longcat", "plamo3"}
 )
 SUPPORTED_STRUCTURAL_TAG_MODELS = (
     XGRAMMAR_BUILTIN_STRUCTURAL_TAG_MODELS | VLLM_BUILTIN_STRUCTURAL_TAG_MODELS
@@ -582,6 +583,88 @@ def get_plamo3_structural_tag(
             )
         )
     return StructuralTag(format=requests_tag)
+
+
+# ---------------------------------------------------------------------------
+# Gemma 4
+# ---------------------------------------------------------------------------
+# <|tool_call>call:NAME{key:<|"|>string<|"|>,num:1}<tool_call|>
+# The markers are special tokens. A string tag would also accept their
+# plain-text spelling, which the model then picks under a forcing tool_choice
+# and which streaming does not parse as a call.
+_GEMMA4_TOOL_CALL_START = "<|tool_call>"
+_GEMMA4_TOOL_CALL_END = "<tool_call|>"
+_GEMMA4_CHANNEL_START = "<|channel>"
+_GEMMA4_CHANNEL_END = "<channel|>"
+_GEMMA4_ARGUMENT_EXCLUDES = [
+    _GEMMA4_TOOL_CALL_START,
+    _GEMMA4_TOOL_CALL_END,
+    _GEMMA4_CHANNEL_START,
+    _GEMMA4_CHANNEL_END,
+]
+
+
+def _gemma4_sorted_schema(schema: Any) -> Any:
+    """Order `properties` by name at every level, as the chat template
+    renders them and the model writes them."""
+    if isinstance(schema, list):
+        return [_gemma4_sorted_schema(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+    out = {key: _gemma4_sorted_schema(value) for key, value in schema.items()}
+    properties = out.get("properties")
+    if isinstance(properties, dict):
+        out["properties"] = dict(sorted(properties.items()))
+    return out
+
+
+def _gemma4_tool_tag(tool: FunctionToolParam) -> TagFormat:
+    return TagFormat(
+        begin=TokenFormat(token=_GEMMA4_TOOL_CALL_START),
+        content=SequenceFormat(
+            elements=[
+                ConstStringFormat(value=f"call:{tool.function.name}"),
+                JSONSchemaFormat(
+                    json_schema=_gemma4_sorted_schema(
+                        get_function_parameters(tool.function)
+                    ),
+                    style="gemma",
+                    excludes=_GEMMA4_ARGUMENT_EXCLUDES,
+                ),
+            ]
+        ),
+        end=TokenFormat(token=_GEMMA4_TOOL_CALL_END),
+    )
+
+
+@register_vllm_structural_tag("gemma4")
+def get_gemma4_structural_tag(
+    tools: list[FunctionToolParam],
+    builtin_tools: list[BuiltinToolParam],
+    tool_choice: SimplifiedToolChoice,
+    reasoning: bool,
+    token_suffix: str = "",
+) -> StructuralTag:
+    """Build the Gemma 4 tool-call structural tag on special-token markers."""
+    del builtin_tools, token_suffix
+
+    tags = [_gemma4_tool_tag(tool) for tool in tools]
+    if tool_choice == "forced":
+        suffix_tag: Any = tags[0]
+    else:
+        suffix_tag = TokenTriggeredTagsFormat(
+            trigger_tokens=[_GEMMA4_TOOL_CALL_START],
+            tags=tags,
+            at_least_one=tool_choice == "required",
+        )
+    if reasoning:
+        prefix_tag = TagFormat(
+            begin="",
+            content=AnyTextFormat(excludes=_GEMMA4_ARGUMENT_EXCLUDES),
+            end=TokenFormat(token=_GEMMA4_CHANNEL_END),
+        )
+        return StructuralTag(format=SequenceFormat(elements=[prefix_tag, suffix_tag]))
+    return StructuralTag(format=suffix_tag)
 
 
 # ---------------------------------------------------------------------------

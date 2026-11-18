@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+import xgrammar as xgr
 from openai.types.responses import CustomTool, ToolChoiceFunction
 from openai.types.responses.tool_choice_allowed import ToolChoiceAllowed
 from xgrammar import Grammar, StructuralTag
@@ -44,6 +45,7 @@ from vllm.tool_parsers.deepseekv32_engine_tool_parser import (
     DeepSeekV32EngineToolParser,
 )
 from vllm.tool_parsers.deepseekv41_engine_tool_parser import DeepSeekV41EngineToolParser
+from vllm.tool_parsers.gemma4_engine_tool_parser import Gemma4EngineToolParser
 from vllm.tool_parsers.glm47_moe_tool_parser import Glm47MoeModelToolParser
 from vllm.tool_parsers.hermes_tool_parser import Hermes2ProToolParser
 from vllm.tool_parsers.kimi_k2_tool_parser import KimiK2ToolParser
@@ -108,6 +110,32 @@ def test_supported_structural_tag_models_include_vllm_builtins():
         XGRAMMAR_BUILTIN_STRUCTURAL_TAG_MODELS | VLLM_BUILTIN_STRUCTURAL_TAG_MODELS
     )
     assert "hermes" in VLLM_BUILTIN_STRUCTURAL_TAG_MODELS
+
+
+@pytest.mark.parametrize(
+    "tool_choice",
+    [
+        "required",
+        ChatCompletionNamedToolChoiceParam(
+            function=ChatCompletionNamedFunction(name="get_weather")
+        ),
+    ],
+)
+def test_gemma4_forced_choice_requires_special_token_markers(sample_tools, tool_choice):
+    vocab = ["<|tool_call>", "<tool_call|>", '<|"|>', "<", "|", "tool_call", ">"]
+    vocab += ["call:get_weather", "{", "city", ":", "Paris", "}", "Hi", "<eos>"]
+    tokenizer_info = xgr.TokenizerInfo(vocab, stop_token_ids=[vocab.index("<eos>")])
+    tag = get_model_structural_tag("gemma4", sample_tools, tool_choice, False)
+    compiled = xgr.GrammarCompiler(tokenizer_info).compile_structural_tag(tag)
+
+    def accepts(tokens: list[str]) -> bool:
+        matcher = xgr.GrammarMatcher(compiled)
+        return all(matcher.accept_token(vocab.index(t)) for t in tokens)
+
+    call = ["call:get_weather", "{", "city", ":", '<|"|>', "Paris", '<|"|>', "}"]
+    assert accepts(["<|tool_call>", *call, "<tool_call|>", "<eos>"])
+    assert not accepts(["<", "|", "tool_call", ">", *call])
+    assert not accepts(["Hi"])
 
 
 def test_deepseek_v41_named_choice_emits_one_call(sample_tools):
@@ -810,6 +838,7 @@ def test_glm_4_7_forced_custom_tool_uses_function_shim():
         (DeepSeekV32EngineToolParser, "deepseek_v3_2"),
         (DeepSeekV4EngineToolParser, "deepseek_v4"),
         (DeepSeekV41EngineToolParser, "deepseek_v4_1"),
+        (Gemma4EngineToolParser, "gemma4"),
         (Glm47MoeModelToolParser, "glm_4_7"),
         (Hermes2ProToolParser, "hermes"),
         (KimiK2ToolParser, "kimi"),
