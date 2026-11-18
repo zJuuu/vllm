@@ -317,6 +317,16 @@ class TestParseGemma4Args:
             "big": "1e3",
         }
 
+    def test_key_with_colons(self):
+        result = _parse_gemma4_args(
+            'time:start:<|"|>2026-01-01T10:30:00<|"|>,a:b:c:{d:1},flag:true'
+        )
+        assert result == {
+            "time:start": "2026-01-01T10:30:00",
+            "a:b:c": {"d": 1},
+            "flag": True,
+        }
+
     def test_non_finite_bare_values_stay_strings(self):
         result = _parse_gemma4_args("x:NaN,y:Infinity")
         assert result == {"x": "NaN", "y": "Infinity"}
@@ -753,6 +763,22 @@ class TestStreamingExtraction:
         results = self._simulate_streaming(parser, mock_request, chunks)
 
         assert json.loads(self._collect_arguments(results)) == _LOOKUP_ARGS
+
+    @pytest.mark.parametrize("size", [1, 2, 5])
+    def test_streaming_key_with_colon(self, parser, mock_request, size):
+        body = 'call:query_db{time:start:<|"|>2026-01-01<|"|>,limit:5}'
+        chunks = [
+            TOOL_CALL_START,
+            *(body[i : i + size] for i in range(0, len(body), size)),
+            TOOL_CALL_END,
+        ]
+
+        results = self._simulate_streaming(parser, mock_request, chunks)
+
+        assert json.loads(self._collect_arguments(results)) == {
+            "time:start": "2026-01-01",
+            "limit": 5,
+        }
 
     def test_streaming_boolean_split_across_chunks(self, parser, mock_request):
         """Boolean value split across token boundaries must not corrupt JSON."""

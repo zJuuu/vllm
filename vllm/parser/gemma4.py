@@ -93,6 +93,28 @@ def _bare_value(raw_val: str) -> object:
     return value
 
 
+def _extend_key_past_colons(args_str: str, colon: int) -> int:
+    """Return the colon that ends a key such as `time:start`.
+
+    Keys are unquoted, so `time:start:<|"|>x<|"|>` is the key `time:start`.
+    Identifier segments after the first colon belong to the key when a later
+    colon of the run is followed by a string, object or array.
+    """
+    n = len(args_str)
+    end = j = colon
+    while True:
+        k = j + 1
+        if k >= n or not (args_str[k].isalpha() or args_str[k] == "_"):
+            return end
+        while k < n and (args_str[k].isalnum() or args_str[k] in "_-."):
+            k += 1
+        if k >= n or args_str[k] != ":":
+            return end
+        if args_str.startswith((STRING_DELIM, "{", "["), k + 1):
+            end = k
+        j = k
+
+
 def _parse_gemma4_args(args_str: str, *, partial: bool = False) -> dict:
     return _parse_gemma4_fields(args_str, partial=partial)[0]
 
@@ -139,6 +161,7 @@ def _parse_gemma4_fields(
             i += 1
         if i >= n:
             break
+        i = _extend_key_past_colons(args_str, i)
         key = args_str[key_start:i].strip()
         if key.startswith(STRING_DELIM) and key.endswith(STRING_DELIM):
             key = key[_DELIM_LEN:-_DELIM_LEN]
