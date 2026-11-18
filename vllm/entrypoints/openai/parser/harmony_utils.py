@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import datetime
+import hashlib
 import json
 from collections import OrderedDict
 from collections.abc import Sequence
@@ -137,10 +138,20 @@ def forbids_tool_calls(request: "ChatCompletionRequest | ResponsesRequest") -> b
 # often send a call back without its `reasoning`, but GPT-OSS expects the
 # reasoning of the current tool loop in the prompt. An entry is only recalled
 # for the same random call id, function name and arguments.
-_TOOL_CALL_REASONING: OrderedDict[str, tuple[str, str, str]] = OrderedDict()
+_TOOL_CALL_REASONING: OrderedDict[str, tuple[str, str]] = OrderedDict()
+_TOOL_CALL_REASONING_MAX_ENTRIES = 65536
 _TOOL_CALL_REASONING_MAX_CHARS = 64 * 1024 * 1024
 _TOOL_CALL_REASONING_MAX_ENTRY_CHARS = 64 * 1024
 _tool_call_reasoning_chars = 0
+
+
+def _call_key(name: Any, arguments: Any) -> str:
+    """A digest of the call, with arguments compared as JSON when they parse."""
+    try:
+        arguments = json.dumps(json.loads(arguments), sort_keys=True)
+    except (TypeError, ValueError):
+        arguments = str(arguments)
+    return hashlib.sha256(f"{name}\0{arguments}".encode()).hexdigest()
 
 
 def remember_tool_call_reasoning(
@@ -155,12 +166,15 @@ def remember_tool_call_reasoning(
         return
     for tool_call_id, name, arguments in tool_calls:
         if tool_call_id in _TOOL_CALL_REASONING:
-            _tool_call_reasoning_chars -= len(_TOOL_CALL_REASONING[tool_call_id][2])
-        _TOOL_CALL_REASONING[tool_call_id] = (name, arguments, reasoning)
+            _tool_call_reasoning_chars -= len(_TOOL_CALL_REASONING[tool_call_id][1])
+        _TOOL_CALL_REASONING[tool_call_id] = (_call_key(name, arguments), reasoning)
         _TOOL_CALL_REASONING.move_to_end(tool_call_id)
         _tool_call_reasoning_chars += len(reasoning)
-    while _tool_call_reasoning_chars > _TOOL_CALL_REASONING_MAX_CHARS:
-        _, (_, _, evicted) = _TOOL_CALL_REASONING.popitem(last=False)
+    while (
+        _tool_call_reasoning_chars > _TOOL_CALL_REASONING_MAX_CHARS
+        or len(_TOOL_CALL_REASONING) > _TOOL_CALL_REASONING_MAX_ENTRIES
+    ):
+        _, (_, evicted) = _TOOL_CALL_REASONING.popitem(last=False)
         _tool_call_reasoning_chars -= len(evicted)
 
 
@@ -169,22 +183,11 @@ def recall_tool_call_reasoning(tool_calls: list[dict[str, Any]]) -> str | None:
     for tool_call in tool_calls:
         entry = _TOOL_CALL_REASONING.get(tool_call.get("id"))
         function = tool_call.get("function", {})
-        if (
-            entry is not None
-            and entry[0] == function.get("name")
-            and _same_arguments(entry[1], function.get("arguments"))
+        if entry is not None and entry[0] == _call_key(
+            function.get("name"), function.get("arguments")
         ):
-            return entry[2]
+            return entry[1]
     return None
-
-
-def _same_arguments(remembered: str, sent: Any) -> bool:
-    if remembered == sent:
-        return True
-    try:
-        return json.loads(remembered) == json.loads(sent)
-    except (TypeError, ValueError):
-        return False
 
 
 def get_system_message(
