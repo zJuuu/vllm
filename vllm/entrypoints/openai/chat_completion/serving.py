@@ -814,7 +814,7 @@ class OpenAIServingChat(GenerateBaseServing):
                             delta=delta_message,
                             logprobs=logprobs,
                             finish_reason=finish_reason,
-                            stop_reason=output.stop_reason,
+                            stop_reason=processor.stop_reason(output.stop_reason),
                             token_ids=(
                                 as_list(output.token_ids) if include_token_ids else None
                             ),
@@ -1075,10 +1075,18 @@ class OpenAIServingChat(GenerateBaseServing):
                 index=output.index,
                 message=message,
                 logprobs=logprobs,
-                finish_reason=resolve_finish_reason(
-                    output.finish_reason, request, bool(message.tool_calls)
+                finish_reason=(
+                    "stop"
+                    if parser is not None and parser.matched_stop is not None
+                    else resolve_finish_reason(
+                        output.finish_reason, request, bool(message.tool_calls)
+                    )
                 ),
-                stop_reason=output.stop_reason,
+                stop_reason=(
+                    parser.matched_stop
+                    if parser is not None and parser.matched_stop is not None
+                    else output.stop_reason
+                ),
                 token_ids=(
                     as_list(output.token_ids)
                     if request.return_token_ids and not suppress_metadata

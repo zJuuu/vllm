@@ -128,6 +128,9 @@ class HarmonyParser(DelegatingParser):
         # For error recovery
         self._current_message_tokens: list[int] = []
 
+        # Final-channel text held back while it could begin a stop string
+        self._final_pending = ""
+
     @property
     def _harmony_parser(self) -> StreamableParser:
         """Lazily initializes the Harmony parser."""
@@ -233,7 +236,10 @@ class HarmonyParser(DelegatingParser):
                 case _SegmentType.REASONING if self.reasoning_parser and text:
                     reasoning_parts.append(text)
                 case _SegmentType.CONTENT if text:
-                    content_parts.append(text)
+                    if msg.channel == "final":
+                        text = self._stop_final_content(text, request, finished=True)
+                    if text:
+                        content_parts.append(text)
                 case _SegmentType.TOOL if self.tool_parser:
                     recipient = msg.recipient
                     content_type = msg.content_type
@@ -289,7 +295,10 @@ class HarmonyParser(DelegatingParser):
                 case _SegmentType.REASONING if self.reasoning_parser:
                     combined_reasoning += segment.delta
                 case _SegmentType.CONTENT:
-                    combined_content += segment.delta
+                    delta = segment.delta
+                    if segment.channel == "final":
+                        delta = self._stop_final_content(delta, request, finished=False)
+                    combined_content += delta
                 case _SegmentType.TOOL if self.tool_parser:
                     assert segment.recipient is not None
                     if prev_recipient != segment.recipient:
@@ -327,6 +336,7 @@ class HarmonyParser(DelegatingParser):
 
         if finished:
             self._next_tool_call_index = 0
+            combined_content += self._stop_final_content("", request, finished=True)
 
         if not combined_content and not combined_reasoning and not tool_messages:
             return None
@@ -349,6 +359,37 @@ class HarmonyParser(DelegatingParser):
                 return None
 
         return delta_message
+
+    def _stop_final_content(
+        self,
+        text: str,
+        request: ChatCompletionRequest | ResponsesRequest,
+        finished: bool,
+    ) -> str:
+        """Apply the client's stop strings to final-channel text.
+
+        Text that could still begin a stop string is held back until the next
+        chunk or the end of the output.
+        """
+        stop = (
+            request._content_stop if isinstance(request, ChatCompletionRequest) else []
+        )
+        if not stop:
+            return text
+        if self.matched_stop is not None:
+            return ""
+        pending = self._final_pending + text
+        matches = [(pending.find(s), s) for s in stop if s in pending]
+        if matches:
+            index, self.matched_stop = min(matches)
+            self._final_pending = ""
+            if request.include_stop_str_in_output:
+                index += len(self.matched_stop)
+            return pending[:index]
+        held = 0 if finished else max(len(s) for s in stop) - 1
+        cut = max(len(pending) - held, 0)
+        self._final_pending = pending[cut:]
+        return pending[:cut]
 
     def process_chunk(self, token_ids: Sequence[int]) -> ChunkResult:
         if not token_ids:
@@ -477,6 +518,13 @@ class HarmonyParser(DelegatingParser):
     def adjust_request(
         self, request: ChatCompletionRequest | ResponsesRequest
     ) -> ChatCompletionRequest | ResponsesRequest:
+        if isinstance(request, ChatCompletionRequest) and request.stop:
+            # The engine matches stop strings in reasoning, call headers and
+            # arguments too; apply them to the final answer only.
+            request._content_stop = (
+                [request.stop] if isinstance(request.stop, str) else list(request.stop)
+            )
+            request.stop = []
         if (
             request.tools
             and self.tool_parser is not None

@@ -1598,3 +1598,79 @@ class TestAdjustRequest:
     def test_explicit_non_strict_tools_keep_free_arguments(self, harmony_parser):
         request = self._build_request("chat", tool_choice="auto", strict_tools=False)
         assert harmony_parser.adjust_request(request).structured_outputs is None
+
+
+class TestStopStrings:
+    OUTPUT = (
+        "<|channel|>analysis<|message|>Weather. Then answer.<|end|>"
+        "<|start|>assistant<|channel|>final<|message|>Sunny in Paris. Bring a hat."
+        "<|return|>"
+    )
+
+    @staticmethod
+    def _request(parser, stop, include_stop_str_in_output=False):
+        request = ChatCompletionRequest(
+            model=REASONING_MODEL_NAME,
+            messages=[{"role": "user", "content": "Weather in Paris?"}],
+            stop=stop,
+            include_stop_str_in_output=include_stop_str_in_output,
+        )
+        return parser.adjust_request(request)
+
+    def test_adjust_request_moves_stop_off_the_engine(self, harmony_parser):
+        request = self._request(harmony_parser, ".")
+        assert request.stop == []
+        assert request._content_stop == ["."]
+
+    @pytest.mark.parametrize(
+        ("stop", "include", "content", "matched"),
+        [
+            (["."], False, "Sunny in Paris", "."),
+            (["."], True, "Sunny in Paris.", "."),
+            (["Paris", "Sunny"], False, "", "Sunny"),
+            (["Rome"], False, "Sunny in Paris. Bring a hat.", None),
+        ],
+    )
+    def test_parse(self, gpt_oss_tokenizer, stop, include, content, matched):
+        parser = HarmonyParser(gpt_oss_tokenizer)
+        reasoning, parsed_content, _ = parser.parse(
+            "",
+            self._request(parser, stop, include),
+            model_output_token_ids=encode_output(self.OUTPUT),
+        )
+
+        assert reasoning == "Weather. Then answer."
+        assert (parsed_content or "") == content
+        assert parser.matched_stop == matched
+
+    def test_parse_delta(self, gpt_oss_tokenizer):
+        parser = HarmonyParser(gpt_oss_tokenizer)
+        request = self._request(parser, [". Bring"])
+        token_ids = encode_output(self.OUTPUT)
+        content = ""
+        for i, token_id in enumerate(token_ids):
+            delta = parser.parse_delta(
+                delta_text="",
+                delta_token_ids=[token_id],
+                request=request,
+                finished=i == len(token_ids) - 1,
+            )
+            content += (delta.content or "") if delta else ""
+
+        assert content == "Sunny in Paris"
+        assert parser.matched_stop == ". Bring"
+
+    def test_tool_call_arguments_are_not_cut(self, gpt_oss_tokenizer):
+        parser = HarmonyParser(gpt_oss_tokenizer)
+        _, content, tool_calls = parser.parse(
+            "",
+            self._request(parser, ["Paris"]),
+            model_output_token_ids=encode_output(
+                "<|channel|>commentary to=functions.get_weather <|constrain|>json"
+                '<|message|>{"city": "Paris"}<|call|>'
+            ),
+        )
+
+        assert content is None
+        assert tool_call_tuples(tool_calls) == [("get_weather", '{"city": "Paris"}')]
+        assert parser.matched_stop is None

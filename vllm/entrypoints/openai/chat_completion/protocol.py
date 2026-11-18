@@ -636,6 +636,9 @@ class ChatCompletionRequest(OpenAIBaseModel):
     _grammar_from_parser: bool = PrivateAttr(default=False)
     """CAUTION: Should only be set by the parser-engine adapter's adjust_request."""
 
+    _content_stop: list[str] = PrivateAttr(default_factory=list)
+    """Stop strings a parser applies to the final answer instead of the engine."""
+
     def resolve_reasoning_ended(
         self, parser: "Parser | None", prompt_token_ids: list[int]
     ) -> bool | None:

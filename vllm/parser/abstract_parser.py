@@ -126,6 +126,9 @@ class Parser:
     # None for the tool parser's default level.
     tool_strict_level: ToolStrictLevel | None = None
     always_adjust_request: bool = False
+    # The client stop string that ended the content, for parsers that apply
+    # stop strings themselves instead of the engine.
+    matched_stop: str | None = None
 
     def __init__(
         self,

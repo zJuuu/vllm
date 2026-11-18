@@ -51,7 +51,7 @@ def _tool_call(index: int) -> DeltaToolCall:
 def test_tool_calls_set_finish_reason_and_respect_parallel_tool_calls():
     """A streamed tool call turns a later `stop` into `tool_calls` and
     `parallel_tool_calls=False` keeps only the first call."""
-    parser = MagicMock()
+    parser = MagicMock(matched_stop=None)
     parser.parse_delta.side_effect = [
         DeltaMessage(tool_calls=[_tool_call(0), _tool_call(1)]),
         None,
@@ -76,7 +76,7 @@ def test_drops_tool_calls_like_non_streaming(tool_choice):
     """Tool calls the parser extracts for `"none"` (Harmony ignores it) or
     null are dropped like on the non-streaming path. A delta left empty is
     not sent and `finish_reason` stays `stop`."""
-    parser = MagicMock()
+    parser = MagicMock(matched_stop=None)
     parser.parse_delta.side_effect = [
         DeltaMessage(content="text", tool_calls=[_tool_call(0)]),
         DeltaMessage(tool_calls=[_tool_call(0)]),
@@ -96,7 +96,7 @@ def test_drops_tool_calls_like_non_streaming(tool_choice):
 def test_finished_without_output_skips_parser():
     """A choice that finishes before generating anything sends an empty
     delta without asking the parser."""
-    parser = MagicMock()
+    parser = MagicMock(matched_stop=None)
     processor = _processor(_request(), parser)
 
     delta, finish_reason = processor.step("", [], "length", [0])
@@ -111,3 +111,18 @@ def test_hidden_reasoning_hides_metadata_only_with_a_parser():
     request = _request(include_reasoning=False)
     assert _processor(request, MagicMock()).hide_metadata
     assert not _processor(request, None).hide_metadata
+
+
+def test_stop_string_matched_by_parser():
+    """A stop string the parser applied to the content finishes with `stop`
+    and is reported as the `stop_reason`, whatever the engine saw."""
+    parser = MagicMock(matched_stop=None)
+    parser.parse_delta.side_effect = [DeltaMessage(content="Sunny"), None]
+    processor = _processor(_request(), parser)
+
+    processor.step("x", [1], None, [0])
+    parser.matched_stop = "."
+    _, finish_reason = processor.step("y", [2], "length", [0])
+
+    assert finish_reason == "stop"
+    assert processor.stop_reason(None) == "."
