@@ -1690,14 +1690,31 @@ class TestToolCallReasoningRecall:
         "<|start|>assistant<|channel|>commentary to=functions.search <|constrain|>json"
         '<|message|>{"q": "laptop"}<|call|>'
     )
+    REASONING = "Search first, then add to cart."
+
+    @staticmethod
+    def _sent_back(tool_call_id, arguments='{"q":"laptop"}'):
+        return [
+            {
+                "id": tool_call_id,
+                "type": "function",
+                "function": {"name": "search", "arguments": arguments},
+            }
+        ]
 
     def test_parse(self, harmony_parser, chat_request):
         _, _, tool_calls = harmony_parser.parse(
             "", chat_request, model_output_token_ids=encode_output(self.OUTPUT)
         )
 
-        assert recall_tool_call_reasoning([tool_calls[0].id]) == (
-            "Search first, then add to cart."
+        tool_call_id = tool_calls[0].id
+        assert recall_tool_call_reasoning(self._sent_back(tool_call_id)) == (
+            self.REASONING
+        )
+        assert recall_tool_call_reasoning(self._sent_back("call_other")) is None
+        assert (
+            recall_tool_call_reasoning(self._sent_back(tool_call_id, '{"q": "phone"}'))
+            is None
         )
 
     def test_parse_delta(self, gpt_oss_tokenizer, chat_request):
@@ -1713,7 +1730,16 @@ class TestToolCallReasoningRecall:
             )
             ids += [tc.id for tc in (delta.tool_calls if delta else []) if tc.id]
 
-        assert recall_tool_call_reasoning(ids) == "Search first, then add to cart."
+        assert recall_tool_call_reasoning(self._sent_back(ids[0])) == self.REASONING
 
-    def test_unknown_id(self):
-        assert recall_tool_call_reasoning(["call_unknown", None]) is None
+    def test_hidden_reasoning_is_not_remembered(self, harmony_parser):
+        request = ChatCompletionRequest(
+            model=REASONING_MODEL_NAME,
+            messages=[{"role": "user", "content": "laptop"}],
+            include_reasoning=False,
+        )
+        _, _, tool_calls = harmony_parser.parse(
+            "", request, model_output_token_ids=encode_output(self.OUTPUT)
+        )
+
+        assert recall_tool_call_reasoning(self._sent_back(tool_calls[0].id)) is None

@@ -975,7 +975,9 @@ class TestParseChatInputToHarmonyMessage:
         ]
 
     def test_assistant_tool_call_recalls_reasoning(self):
-        remember_tool_call_reasoning(["call_recall"], "Plan: search, then buy.")
+        remember_tool_call_reasoning(
+            [("call_recall", "search", "{}")], "Plan: search, then buy."
+        )
         call = {
             "id": "call_recall",
             "type": "function",

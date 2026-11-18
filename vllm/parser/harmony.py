@@ -134,7 +134,7 @@ class HarmonyParser(DelegatingParser):
 
         # Streamed reasoning and tool call ids, remembered when the output ends
         self._streamed_reasoning = ""
-        self._streamed_tool_call_ids: list[str] = []
+        self._streamed_tool_calls: dict[int, list[str]] = {}
 
     @property
     def _harmony_parser(self) -> StreamableParser:
@@ -265,8 +265,10 @@ class HarmonyParser(DelegatingParser):
                     )
 
         reasoning = "\n".join(reasoning_parts) or None
-        if reasoning and tool_calls:
-            remember_tool_call_reasoning([tc.id for tc in tool_calls], reasoning)
+        if reasoning and tool_calls and request.include_reasoning:
+            remember_tool_call_reasoning(
+                [(tc.id, tc.name, tc.arguments) for tc in tool_calls], reasoning
+            )
         content = "\n".join(content_parts) or None
         return reasoning, content, tool_calls or None
 
@@ -343,16 +345,27 @@ class HarmonyParser(DelegatingParser):
                             )
 
         self._streamed_reasoning += combined_reasoning
-        self._streamed_tool_call_ids += [tc.id for tc in tool_messages if tc.id]
+        for tool_message in tool_messages:
+            function = tool_message.function
+            assert function is not None
+            streamed = self._streamed_tool_calls.setdefault(
+                tool_message.index, [tool_message.id or "", function.name or "", ""]
+            )
+            streamed[2] += function.arguments or ""
         if finished:
             self._next_tool_call_index = 0
             combined_content += self._stop_final_content("", request, finished=True)
-            if self._streamed_reasoning and self._streamed_tool_call_ids:
+            if (
+                self._streamed_reasoning
+                and self._streamed_tool_calls
+                and request.include_reasoning
+            ):
                 remember_tool_call_reasoning(
-                    self._streamed_tool_call_ids, self._streamed_reasoning
+                    [tuple(call) for call in self._streamed_tool_calls.values()],
+                    self._streamed_reasoning,
                 )
             self._streamed_reasoning = ""
-            self._streamed_tool_call_ids = []
+            self._streamed_tool_calls = {}
 
         if not combined_content and not combined_reasoning and not tool_messages:
             return None

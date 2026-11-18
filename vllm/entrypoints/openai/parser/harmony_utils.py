@@ -135,25 +135,56 @@ def forbids_tool_calls(request: "ChatCompletionRequest | ResponsesRequest") -> b
 
 # Reasoning of the tool calls this server returned, by tool call id. Clients
 # often send a call back without its `reasoning`, but GPT-OSS expects the
-# reasoning of the current tool loop in the prompt. Only a client holding the
-# random call id can bring the reasoning back.
-_TOOL_CALL_REASONING: OrderedDict[str, str] = OrderedDict()
-_TOOL_CALL_REASONING_SIZE = 8192
+# reasoning of the current tool loop in the prompt. An entry is only recalled
+# for the same random call id, function name and arguments.
+_TOOL_CALL_REASONING: OrderedDict[str, tuple[str, str, str]] = OrderedDict()
+_TOOL_CALL_REASONING_MAX_CHARS = 64 * 1024 * 1024
+_TOOL_CALL_REASONING_MAX_ENTRY_CHARS = 64 * 1024
+_tool_call_reasoning_chars = 0
 
 
-def remember_tool_call_reasoning(tool_call_ids: list[str], reasoning: str) -> None:
-    for tool_call_id in tool_call_ids:
-        _TOOL_CALL_REASONING[tool_call_id] = reasoning
-        _TOOL_CALL_REASONING.move_to_end(tool_call_id)
-    while len(_TOOL_CALL_REASONING) > _TOOL_CALL_REASONING_SIZE:
-        _TOOL_CALL_REASONING.popitem(last=False)
-
-
-def recall_tool_call_reasoning(tool_call_ids: list[str | None]) -> str | None:
-    for tool_call_id in tool_call_ids:
+def remember_tool_call_reasoning(
+    tool_calls: Sequence[tuple[str, str, str]], reasoning: str
+) -> None:
+    """Remember `reasoning` for `(id, name, arguments)` of returned calls."""
+    global _tool_call_reasoning_chars
+    if (
+        not envs.VLLM_GPT_OSS_RECALL_TOOL_CALL_REASONING
+        or len(reasoning) > _TOOL_CALL_REASONING_MAX_ENTRY_CHARS
+    ):
+        return
+    for tool_call_id, name, arguments in tool_calls:
         if tool_call_id in _TOOL_CALL_REASONING:
-            return _TOOL_CALL_REASONING[tool_call_id]
+            _tool_call_reasoning_chars -= len(_TOOL_CALL_REASONING[tool_call_id][2])
+        _TOOL_CALL_REASONING[tool_call_id] = (name, arguments, reasoning)
+        _TOOL_CALL_REASONING.move_to_end(tool_call_id)
+        _tool_call_reasoning_chars += len(reasoning)
+    while _tool_call_reasoning_chars > _TOOL_CALL_REASONING_MAX_CHARS:
+        _, (_, _, evicted) = _TOOL_CALL_REASONING.popitem(last=False)
+        _tool_call_reasoning_chars -= len(evicted)
+
+
+def recall_tool_call_reasoning(tool_calls: list[dict[str, Any]]) -> str | None:
+    """The remembered reasoning of chat `tool_calls` sent back without it."""
+    for tool_call in tool_calls:
+        entry = _TOOL_CALL_REASONING.get(tool_call.get("id"))
+        function = tool_call.get("function", {})
+        if (
+            entry is not None
+            and entry[0] == function.get("name")
+            and _same_arguments(entry[1], function.get("arguments"))
+        ):
+            return entry[2]
     return None
+
+
+def _same_arguments(remembered: str, sent: Any) -> bool:
+    if remembered == sent:
+        return True
+    try:
+        return json.loads(remembered) == json.loads(sent)
+    except (TypeError, ValueError):
+        return False
 
 
 def get_system_message(
@@ -576,9 +607,7 @@ def parse_chat_input_to_harmony_message(
             commentary_msg = commentary_msg.with_channel("commentary")
             msgs.append(commentary_msg)
 
-        reasoning = chat_msg.get("reasoning") or recall_tool_call_reasoning(
-            [call.get("id") for call in tool_calls]
-        )
+        reasoning = chat_msg.get("reasoning") or recall_tool_call_reasoning(tool_calls)
         if reasoning:
             analysis_msg = Message.from_role_and_content(Role.ASSISTANT, reasoning)
             analysis_msg = analysis_msg.with_channel("analysis")

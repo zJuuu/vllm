@@ -299,6 +299,7 @@ if TYPE_CHECKING:
     VLLM_GPT_OSS_SYSTEM_TOOL_MCP_LABELS: set[str] = set()
     VLLM_USE_EXPERIMENTAL_PARSER_CONTEXT: bool = False
     VLLM_GPT_OSS_HARMONY_SYSTEM_INSTRUCTIONS: bool = False
+    VLLM_GPT_OSS_RECALL_TOOL_CALL_REASONING: bool = True
     VLLM_SYSTEM_START_DATE: str | None = None
     VLLM_TOOL_JSON_ERROR_AUTOMATIC_RETRY: bool = False
     VLLM_CUSTOM_SCOPES_FOR_PROFILING: bool = False
@@ -2156,6 +2157,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Allows harmony instructions to be injected on system messages
     "VLLM_GPT_OSS_HARMONY_SYSTEM_INSTRUCTIONS": lambda: bool(
         int(os.getenv("VLLM_GPT_OSS_HARMONY_SYSTEM_INSTRUCTIONS", "0"))
+    ),
+    # Re-insert the reasoning of tool calls this server returned when a client
+    # sends them back without it (kept in-process, by call id)
+    "VLLM_GPT_OSS_RECALL_TOOL_CALL_REASONING": lambda: bool(
+        int(os.getenv("VLLM_GPT_OSS_RECALL_TOOL_CALL_REASONING", "1"))
     ),
     # Pin the conversation start date injected into the Harmony system
     # message. When unset the current date is used, which introduces
