@@ -1,86 +1,79 @@
-{%- macro format_parameters(properties, required, filter_keys=false) -%}
-    {%- set standard_keys = ['description', 'type', 'properties', 'required', 'nullable'] -%}
+{%- macro format_schema(schema, defs, depth) -%}
+    {%- set ref_name = schema['$ref'].split('/') | last if schema['$ref'] is string else none -%}
+    {%- if ref_name and defs and ref_name in defs and depth < 8 -%}
+        {%- set value = defs[ref_name] -%}
+    {%- else -%}
+        {%- set value = schema -%}
+    {%- endif -%}
+    {%- set ns = namespace(out='', nullable=value['nullable'] is true, type_name=none) -%}
+    {%- if value['type'] is string -%}
+        {%- set ns.type_name = value['type'] | upper -%}
+    {%- elif value['type'] is sequence and value['type'] | length > 0 -%}
+        {%- set non_null = value['type'] | reject('equalto', 'null') | list -%}
+        {%- if non_null | length == 1 -%}
+            {%- set ns.type_name = non_null[0] | upper -%}
+            {%- set ns.nullable = ns.nullable or 'null' in value['type'] -%}
+        {%- else -%}
+            {%- set ns.type_name = non_null | map('upper') | list -%}
+            {%- set ns.nullable = ns.nullable or 'null' in value['type'] -%}
+        {%- endif -%}
+    {%- elif value['properties'] is mapping -%}
+        {%- set ns.type_name = 'OBJECT' -%}
+    {%- elif value['items'] is mapping -%}
+        {%- set ns.type_name = 'ARRAY' -%}
+    {%- endif -%}
+    {%- set description = schema['description'] or value['description'] -%}
+    {%- if description -%}
+        {%- set ns.out = 'description:<|"|>' + description + '<|"|>' -%}
+    {%- endif -%}
+    {%- for key in ['enum', 'const', 'format', 'pattern', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'minItems', 'maxItems', 'uniqueItems', 'minProperties', 'maxProperties', 'default', 'examples'] -%}
+        {%- if value[key] is defined -%}
+            {%- set ns.out = ns.out + (',' if ns.out else '') + key + ':' + format_argument(value[key]) -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {%- if value['items'] is mapping -%}
+        {%- set ns.out = ns.out + (',' if ns.out else '') + 'items:{' + format_schema(value['items'], defs, depth + 1) + '}' -%}
+    {%- endif -%}
+    {%- for key in ['anyOf', 'oneOf', 'allOf'] -%}
+        {%- if value[key] is defined and value[key] is sequence and value[key] is not string -%}
+            {%- set ns_alt = namespace(out='') -%}
+            {%- for alt in value[key] if alt is mapping -%}
+                {%- set ns_alt.out = ns_alt.out + (',' if not loop.first else '') + '{' + format_schema(alt, defs, depth + 1) + '}' -%}
+            {%- endfor -%}
+            {%- set ns.out = ns.out + (',' if ns.out else '') + key + ':[' + ns_alt.out + ']' -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {%- if ns.nullable -%}
+        {%- set ns.out = ns.out + (',' if ns.out else '') + 'nullable:true' -%}
+    {%- endif -%}
+    {%- if value['properties'] is mapping -%}
+        {%- set ns.out = ns.out + (',' if ns.out else '') + 'properties:{' + format_parameters(value['properties'], defs, depth + 1) + '}' -%}
+    {%- endif -%}
+    {%- if value['required'] is defined and value['required'] is sequence and value['required'] is not string and value['required'] | length > 0 -%}
+        {%- set ns.out = ns.out + (',' if ns.out else '') + 'required:' + format_argument(value['required']) -%}
+    {%- endif -%}
+    {%- if value['additionalProperties'] is mapping -%}
+        {%- set ns.out = ns.out + (',' if ns.out else '') + 'additionalProperties:{' + format_schema(value['additionalProperties'], defs, depth + 1) + '}' -%}
+    {%- elif value['additionalProperties'] is false -%}
+        {%- set ns.out = ns.out + (',' if ns.out else '') + 'additionalProperties:false' -%}
+    {%- endif -%}
+    {%- if ns.type_name is string -%}
+        {%- set ns.out = ns.out + (',' if ns.out else '') + 'type:<|"|>' + ns.type_name + '<|"|>' -%}
+    {%- elif ns.type_name -%}
+        {%- set ns.out = ns.out + (',' if ns.out else '') + 'type:' + format_argument(ns.type_name) -%}
+    {%- endif -%}
+    {{- ns.out -}}
+{%- endmacro -%}
+{%- macro format_parameters(properties, defs, depth) -%}
     {%- set ns = namespace(found_first=false) -%}
     {%- for key, value in properties | dictsort -%}
-        {%- set add_comma = false -%}
-        {%- if not filter_keys or key not in standard_keys -%}
-            {%- if ns.found_first %},{% endif -%}
-            {%- set ns.found_first = true -%}
-            {{ key }}:{
-            {%- if value['description'] -%}
-                description:<|"|>{{ value['description'] }}<|"|>
-                {%- set add_comma = true -%}
-            {%- endif -%}
-            {%- if value['type'] | upper == 'STRING' -%}
-                {%- if value['enum'] -%}
-                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
-                    enum:{{ format_argument(value['enum']) }}
-                {%- endif -%}
-            {%- elif value['type'] | upper == 'ARRAY' -%}
-                {%- if value['items'] is mapping and value['items'] -%}
-                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
-                    items:{
-                    {%- set ns_items = namespace(found_first=false) -%}
-                    {%- for item_key, item_value in value['items'] | dictsort -%}
-                        {%- if item_value is not none -%}
-                            {%- if ns_items.found_first %},{% endif -%}
-                            {%- set ns_items.found_first = true -%}
-                            {%- if item_key == 'properties' -%}
-                                properties:{
-                                {%- if item_value is mapping -%}
-                                    {{- format_parameters(item_value, value['items']['required'] | default([])) -}}
-                                {%- endif -%}
-                                }
-                            {%- elif item_key == 'required' -%}
-                                required:[
-                                {%- for req_item in item_value -%}
-                                    <|"|>{{- req_item -}}<|"|>
-                                    {%- if not loop.last %},{% endif -%}
-                                {%- endfor -%}
-                                ]
-                            {%- elif item_key == 'type' -%}
-                                {%- if item_value is string -%}
-                                    type:{{ format_argument(item_value | upper) }}
-                                {%- else -%}
-                                    type:{{ format_argument(item_value | map('upper') | list) }}
-                                {%- endif -%}
-                            {%- else -%}
-                                {{ item_key }}:{{ format_argument(item_value) }}
-                            {%- endif -%}
-                        {%- endif -%}
-                    {%- endfor -%}
-                    }
-                {%- endif -%}
-            {%- endif -%}
-            {%- if value['nullable'] %}
-                {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
-                nullable:true
-            {%- endif -%}
-            {%- if value['type'] | upper == 'OBJECT' -%}
-                {%- if value['properties'] is defined and value['properties'] is mapping -%}
-                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
-                    properties:{
-                    {{- format_parameters(value['properties'], value['required'] | default([])) -}}
-                    }
-                {%- elif value is mapping -%}
-                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
-                    properties:{
-                    {{- format_parameters(value, value['required'] | default([]), filter_keys=true) -}}
-                    }
-                {%- endif -%}
-                {%- if value['required'] -%}
-                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
-                    required:[
-                    {%- for item in value['required'] | default([]) -%}
-                        <|"|>{{- item -}}<|"|>
-                        {%- if not loop.last %},{% endif -%}
-                    {%- endfor -%}
-                    ]
-                {%- endif -%}
-            {%- endif -%}
-            {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
-            type:<|"|>{{ value['type'] | upper }}<|"|>}
+        {%- if ns.found_first %},{% endif -%}
+        {%- set ns.found_first = true -%}
+        {{ key }}:{
+        {%- if value is mapping -%}
+            {{- format_schema(value, defs, depth) -}}
         {%- endif -%}
+        }
     {%- endfor -%}
 {%- endmacro -%}
 {%- macro format_function_declaration(tool_data) -%}
@@ -89,7 +82,7 @@
     {%- if params -%}
         ,parameters:{
         {%- if params['properties'] -%}
-            properties:{ {{- format_parameters(params['properties'], params['required']) -}} },
+            properties:{ {{- format_parameters(params['properties'], params['$defs'] or params['definitions'], 0) -}} },
         {%- endif -%}
         {%- if params['required'] -%}
             required:[

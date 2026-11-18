@@ -412,3 +412,61 @@ class TestGemma4ChatTemplate:
         assert "<|image|>" in result
         assert "<|audio|>" in result
         assert "<|video|>" in result
+
+    def test_schema_keywords_rendered(self, gemma4_template):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "order",
+                    "description": "Order items",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "qty": {"type": "integer", "minimum": 1, "maximum": 10},
+                            "version": {"type": "string", "const": "v2"},
+                            "code": {"type": "integer", "enum": [1, 2]},
+                            "unit": {
+                                "anyOf": [
+                                    {"type": "string", "enum": ["C1", "F2"]},
+                                    {"type": "null"},
+                                ]
+                            },
+                            "tags": {
+                                "type": ["array", "null"],
+                                "items": {"type": "string"},
+                            },
+                            "item": {"$ref": "#/$defs/Item"},
+                        },
+                        "required": ["qty"],
+                        "$defs": {
+                            "Item": {
+                                "type": "object",
+                                "properties": {"sku": {"type": "string"}},
+                                "required": ["sku"],
+                            }
+                        },
+                    },
+                },
+            }
+        ]
+        result = _render(
+            gemma4_template,
+            [{"role": "user", "content": "Order"}],
+            tools=tools,
+            add_generation_prompt=True,
+        )
+        assert 'qty:{minimum:1,maximum:10,type:<|"|>INTEGER<|"|>}' in result
+        assert 'version:{const:<|"|>v2<|"|>,type:<|"|>STRING<|"|>}' in result
+        assert 'code:{enum:[1,2],type:<|"|>INTEGER<|"|>}' in result
+        assert (
+            'unit:{anyOf:[{enum:[<|"|>C1<|"|>,<|"|>F2<|"|>],type:<|"|>STRING<|"|>},'
+            '{type:<|"|>NULL<|"|>}]}'
+        ) in result
+        assert (
+            'tags:{items:{type:<|"|>STRING<|"|>},nullable:true,type:<|"|>ARRAY<|"|>}'
+        ) in result
+        assert (
+            'item:{properties:{sku:{type:<|"|>STRING<|"|>}},'
+            'required:[<|"|>sku<|"|>],type:<|"|>OBJECT<|"|>}'
+        ) in result
