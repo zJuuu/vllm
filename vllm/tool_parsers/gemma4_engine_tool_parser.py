@@ -34,6 +34,9 @@ def _resolve_tokens(node: Any, vocab: dict[str, int]) -> Any:
 class Gemma4EngineToolParser(Gemma4ParserToolAdapter):  # type: ignore[valid-type, misc]
     supports_required_and_named = False
     structural_tag_model = "gemma4"
+    # Constrain the call envelope of every request with tools: otherwise
+    # response_format with non-strict tools leaves no way to call a tool.
+    default_tool_strict_level = ToolStrictLevel.FUNCTION
 
     def get_structural_tag(
         self,

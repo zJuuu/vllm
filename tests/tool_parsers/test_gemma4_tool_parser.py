@@ -9,6 +9,7 @@ import pytest
 
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
 from vllm.entrypoints.openai.responses.protocol import ResponsesRequest
+from vllm.parser.abstract_parser import DelegatingParser
 from vllm.parser.gemma4 import (
     TOOL_CALL_END,
     TOOL_CALL_START,
@@ -184,6 +185,30 @@ def test_offline_parse_tool_calls_returns_literal_text():
     assert parse_tool_calls(text) == [
         {"name": "f", "arguments": {"a": "true", "b": "null", "c": "x", "n": "42"}}
     ]
+
+
+def test_response_format_with_tools_still_allows_calls(mock_tokenizer):
+    class Gemma4TestParser(DelegatingParser):
+        tool_parser_cls = Gemma4EngineToolParser
+
+    request = ChatCompletionRequest(
+        model="gemma4",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=_TOOLS,
+        response_format={
+            "type": "json_schema",
+            "json_schema": {"name": "a", "schema": {"type": "object"}},
+        },
+    )
+    parser = Gemma4TestParser(mock_tokenizer, tools=_TOOLS)
+    parser._reasoning_parser = MagicMock(adjust_request=lambda request: request)
+
+    out = parser.adjust_request(request)
+
+    tag = json.loads(out.structured_outputs.structural_tag)["format"]
+    assert tag["type"] == "or"
+    assert tag["elements"][0]["trigger_tokens"] == [TOOL_CALL_START_ID]
+    assert tag["elements"][1]["type"] == "json_schema"
 
 
 # ---------------------------------------------------------------------------
