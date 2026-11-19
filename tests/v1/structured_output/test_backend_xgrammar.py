@@ -14,6 +14,7 @@ from vllm.sampling_params import SamplingParams, StructuredOutputsParams
 from vllm.v1.structured_output.backend_types import StructuredOutputOptions
 from vllm.v1.structured_output.backend_xgrammar import (
     XgrammarBackend,
+    _limit_json_whitespace,
     has_xgrammar_unsupported_json_features,
     validate_xgrammar_grammar,
 )
@@ -604,3 +605,31 @@ class TestXgrammarBackend:
                 backend,
                 '{"where_space_after_comma":42, "wow_thats_cool":4242}',
             )
+
+
+def test_limit_json_whitespace_bounds_json_formats_in_structural_tag():
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}, "n": {"type": "number"}},
+        "required": ["answer", "n"],
+    }
+    tag = {
+        "type": "structural_tag",
+        "format": {
+            "type": "or",
+            "elements": [
+                {"type": "json_schema", "json_schema": schema, "style": "gemma"},
+                {"type": "json_schema", "json_schema": schema},
+            ],
+        },
+    }
+
+    _limit_json_whitespace(tag)
+
+    gemma, json_format = tag["format"]["elements"]
+    assert "max_whitespace_cnt" not in gemma
+    grammar = Grammar.from_structural_tag(
+        {"type": "structural_tag", "format": json_format}
+    )
+    assert _is_grammar_accept_string(grammar, '{"answer": "x", "n": 1}')
+    assert not _is_grammar_accept_string(grammar, '{"answer": "x"\n   \n   , "n": 1}')

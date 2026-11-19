@@ -176,6 +176,9 @@ class XgrammarBackend(StructuredOutputBackend):
                     tags, s_tag["triggers"]
                 )
             else:
+                if self.disable_any_whitespace:
+                    _limit_json_whitespace(s_tag)
+                    grammar_spec = json.dumps(s_tag)
                 ctx = self.full_vocab_compiler.compile_structural_tag(grammar_spec)
         else:
             logger.error(
@@ -232,6 +235,27 @@ class XgrammarBackend(StructuredOutputBackend):
         return xgr.TokenizerInfo.from_vocab_and_metadata(
             encoded_vocab, tokenizer_info.dump_metadata()
         )
+
+
+def _limit_json_whitespace(node: Any) -> None:
+    """Apply `disable_any_whitespace` to the JSON formats of a structural tag.
+
+    xgrammar requires a positive `max_whitespace_cnt`; one character still
+    rules out the unbounded whitespace a model can emit when the schema
+    forbids closing the object it wants to close.
+    """
+    if isinstance(node, list):
+        for item in node:
+            _limit_json_whitespace(item)
+    elif isinstance(node, dict):
+        if (
+            node.get("type") == "json_schema"
+            and node.get("style", "json") == "json"
+            and node.get("max_whitespace_cnt") is None
+        ):
+            node["max_whitespace_cnt"] = 1
+        for value in node.values():
+            _limit_json_whitespace(value)
 
 
 @dataclass
