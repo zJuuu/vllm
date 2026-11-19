@@ -494,6 +494,16 @@ class TestExtractToolCalls:
         args = json.loads(result.tool_calls[0].function.arguments)
         assert args == {"is_active": True, "count": 42, "score": 3.14}
 
+    def test_text_after_tool_call_is_kept(self, parser, mock_request):
+        model_output = (
+            'Checking.<|tool_call>call:get_weather{location:<|"|>Paris<|"|>}'
+            "<tool_call|>Done."
+        )
+        result = parser.extract_tool_calls(model_output, mock_request)
+
+        assert result.tool_calls[0].function.name == "get_weather"
+        assert result.content == "Checking.Done."
+
     def test_types_follow_the_model_unless_the_schema_forbids_them(
         self, parser, mock_request
     ):

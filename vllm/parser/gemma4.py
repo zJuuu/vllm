@@ -702,6 +702,12 @@ class Gemma4Parser(ParserEngine):
         finished: bool = False,
     ) -> DeltaMessage | None:
         delta = super()._events_to_delta(events, finished=finished)
+        if finished and self._deferred_content:
+            # Text written after a tool call waits for the next delta; a
+            # finished parse has none, so return it now.
+            delta = delta or DeltaMessage()
+            delta.content = (delta.content or "") + self._deferred_content
+            self._deferred_content = ""
         if delta is None or delta.reasoning is None:
             return delta
 
