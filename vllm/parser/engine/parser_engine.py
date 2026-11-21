@@ -72,6 +72,7 @@ class ToolCallSlot:
         "extend_open_value",
         "open_value_streams",
         "completed",
+        "index",
     )
 
     def __init__(self) -> None:
@@ -86,6 +87,7 @@ class ToolCallSlot:
         self.extend_open_value: ArgValueExtender | None = None
         self.open_value_streams: bool = False
         self.completed: bool = False
+        self.index: int = -1  # position among the calls returned
 
     @property
     def args(self) -> str:
@@ -159,6 +161,7 @@ class ParserEngine(Parser):
         self._prompt_streaming_prepared: bool = False
 
         self._tool_slots: list[ToolCallSlot] = []
+        self._tool_call_count: int = 0
         self._deferred_content: str = ""
         self._deferred_reasoning: str = ""
         self._content_has_nonws: bool = False
@@ -279,6 +282,7 @@ class ParserEngine(Parser):
         )
         self._reasoning_ended = not self._has_reasoning or prompt_closed
         self._tool_slots.clear()
+        self._tool_call_count = 0
         self._deferred_content = ""
         self._deferred_reasoning = ""
         self._content_has_nonws = False
@@ -1035,6 +1039,15 @@ class ParserEngine(Parser):
         idx = event.tool_index
         self._tool_slots[idx].name += event.value
 
+    def _send_name(self, slot: ToolCallSlot, name: str) -> None:
+        """Accept *name* for *slot*; the call gets the next streamed index."""
+        slot.name = name
+        slot.name_sent = True
+        slot.string_keys = self._streamable_string_keys(self._tool_properties(name))
+        self._ensure_tool_id(slot, name)
+        slot.index = self._tool_call_count
+        self._tool_call_count += 1
+
     def _emit_name_delta(
         self,
         idx: int,
@@ -1044,13 +1057,10 @@ class ParserEngine(Parser):
         if name is None or not self._accept_tool_name(name):
             return
         slot = self._tool_slots[idx]
-        slot.name = name
-        slot.name_sent = True
-        slot.string_keys = self._streamable_string_keys(self._tool_properties(name))
-        self._ensure_tool_id(slot, name)
+        self._send_name(slot, name)
         deltas.append(
             DeltaToolCall(
-                index=idx,
+                index=slot.index,
                 id=slot.id,
                 type="function",
                 function=DeltaFunctionCall(name=name),
@@ -1080,7 +1090,7 @@ class ParserEngine(Parser):
             if arg_delta:
                 deltas.append(
                     DeltaToolCall(
-                        index=idx,
+                        index=slot.index,
                         function=DeltaFunctionCall(arguments=arg_delta),
                     )
                 )
@@ -1101,15 +1111,10 @@ class ParserEngine(Parser):
         if not slot.name_sent:
             name = slot.name or self._try_extract_name(idx) or ""
             if self._accept_tool_name(name):
-                slot.name = name
-                slot.name_sent = True
-                slot.string_keys = self._streamable_string_keys(
-                    self._tool_properties(name)
-                )
-                self._ensure_tool_id(slot, name)
+                self._send_name(slot, name)
                 deltas.append(
                     DeltaToolCall(
-                        index=idx,
+                        index=slot.index,
                         id=slot.id,
                         type="function",
                         function=DeltaFunctionCall(
@@ -1123,7 +1128,7 @@ class ParserEngine(Parser):
         if remaining and slot.name_sent:
             deltas.append(
                 DeltaToolCall(
-                    index=idx,
+                    index=slot.index,
                     function=DeltaFunctionCall(arguments=remaining),
                 )
             )

@@ -229,7 +229,7 @@ class KimiK2Parser(ParserEngine):
         ):
             deltas.append(
                 DeltaToolCall(
-                    index=idx,
+                    index=self._tool_slots[idx].index,
                     function=DeltaFunctionCall(arguments=event.value),
                 )
             )

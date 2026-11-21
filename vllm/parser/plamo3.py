@@ -299,7 +299,7 @@ class Plamo3Parser(ParserEngine):
         if event.value and not name_sent_before and slot.name_sent:
             deltas.append(
                 DeltaToolCall(
-                    index=idx,
+                    index=self._tool_slots[idx].index,
                     function=DeltaFunctionCall(arguments=event.value),
                 )
             )
