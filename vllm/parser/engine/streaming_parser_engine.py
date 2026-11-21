@@ -731,11 +731,10 @@ class StreamingParserEngine:
             )
             if event_type == EventType.TEXT_CHUNK and not event_value:
                 continue
-            if (
-                event_type == EventType.ARG_VALUE_CHUNK
-                and self._tool_args_checker is not None
-            ):
-                self._tool_args_checker.feed(event_value)
+            if event_type == EventType.ARG_VALUE_CHUNK:
+                self._args_chunk_emitted = True
+                if self._tool_args_checker is not None:
+                    self._tool_args_checker.feed(event_value)
             events.append(
                 SemanticEvent(
                     event_type,
