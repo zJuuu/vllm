@@ -1881,3 +1881,23 @@ def test_prose_tool_call_opener_stays_content(
     results.append((parser.finish_streaming(), text))
     assert collect_content(results).strip() == content
     assert collect_function_name(results) == (names[0] if names else None)
+
+
+@pytest.mark.parametrize("size", [1, 5])
+def test_prose_function_prefix_is_not_a_call(mock_tokenizer, mock_request, size):
+    from vllm.parser.qwen3 import Qwen3Parser
+
+    text = "To call it, write <function=NAME followed by the parameters."
+
+    def make_parser():
+        return Qwen3Parser(
+            mock_tokenizer, chat_template_kwargs={"enable_thinking": False}
+        )
+
+    assert make_parser().extract_tool_calls(text, mock_request).tool_calls == []
+    parser = make_parser()
+    results = simulate_tool_streaming(
+        parser, mock_request, [text[i : i + size] for i in range(0, len(text), size)]
+    )
+    results.append((parser.finish_streaming(), text))
+    assert collect_function_name(results) is None

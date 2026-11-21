@@ -723,6 +723,12 @@ class Qwen3Parser(ParserEngine):
                 _qwen3_literal_arg_value_extender, cache=cache
             )
 
+    def _accept_tool_name(self, name: str) -> bool:
+        if self._qwen3_rules and len(name.split()) > 1:
+            # Words after `<function=` are prose that quotes the syntax.
+            return False
+        return super()._accept_tool_name(name)
+
     def extract_reasoning(
         self,
         model_output: str,
