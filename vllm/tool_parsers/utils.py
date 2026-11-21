@@ -332,25 +332,74 @@ def _extract_tool_info(
         raise TypeError(f"Unsupported tool type: {type(tool)}")
 
 
-def find_tool_properties(
+def find_tool_parameters(
     tools: list[Tool] | None,
     tool_name: str,
 ) -> dict[str, Any]:
-    """Find a tool by name and return its properties dict, or {}."""
+    """Find a tool by name and return its parameters schema, or {}."""
     if not tools:
         return {}
     for tool in tools:
         if isinstance(tool, (FunctionTool, NamespaceTool, CustomTool)):
             for name, params in iter_response_function_tool_info(tool):
                 if name == tool_name:
-                    return (params or {}).get("properties", {})
+                    return params or {}
             continue
         if not _is_function_tool(tool):
             continue
         name, params = _extract_tool_info(tool)
         if name == tool_name:
-            return (params or {}).get("properties", {})
+            return params or {}
     return {}
+
+
+def find_tool_properties(
+    tools: list[Tool] | None,
+    tool_name: str,
+) -> dict[str, Any]:
+    """Find a tool by name and return its properties dict, or {}."""
+    return find_tool_parameters(tools, tool_name).get("properties", {})
+
+
+def resolve_schema_refs(
+    schema: Any,
+    root: dict[str, Any],
+    resolved_refs: dict[str, dict[str, Any] | None] | None = None,
+) -> Any:
+    """Inline the local `$ref`s (`#/...`) of *schema* against *root*.
+
+    Each reference is resolved once and shared.  A recursive or
+    unresolvable reference is left in place.
+    """
+    if resolved_refs is None:
+        resolved_refs = {}
+    if isinstance(schema, list):
+        return [resolve_schema_refs(item, root, resolved_refs) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+    resolved = {
+        key: resolve_schema_refs(value, root, resolved_refs)
+        for key, value in schema.items()
+        if key != "$ref"
+    }
+    ref = schema.get("$ref")
+    if not isinstance(ref, str):
+        return resolved
+    if ref not in resolved_refs:
+        resolved_refs[ref] = None
+        target: Any = None
+        if ref.startswith("#/"):
+            target = root
+            for part in ref[2:].split("/"):
+                part = part.replace("~1", "/").replace("~0", "~")
+                target = target.get(part) if isinstance(target, dict) else None
+        if isinstance(target, dict):
+            resolved_refs[ref] = resolve_schema_refs(target, root, resolved_refs)
+    target = resolved_refs[ref]
+    if target is None:
+        resolved["$ref"] = ref
+        return resolved
+    return {**target, **resolved}
 
 
 def find_tool_name(
