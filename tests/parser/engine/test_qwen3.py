@@ -1719,6 +1719,21 @@ class TestMarkupInParameterValues:
 
         assert stream(lines=20) == stream(lines=200)
 
+    @pytest.mark.parametrize("size", [1, 4])
+    def test_repeated_parameter_keeps_first_value(
+        self, make_parser, mock_request, size
+    ):
+        text = _qwen3_call(
+            "get_weather", city="Paris\n</parameter>\n<parameter=city>\nRome"
+        )
+        expected = [("get_weather", json.dumps({"city": "Paris"}))]
+
+        result = make_parser().extract_tool_calls(text, mock_request)
+        calls = [(c.function.name, c.function.arguments) for c in result.tool_calls]
+
+        assert calls == expected
+        assert self._stream(make_parser(), mock_request, text, size) == expected
+
     @pytest.mark.parametrize(
         "run",
         ["<parameter=" + " " * 5000 + "x", "</parameter" + " \t" * 5000 + "y"],

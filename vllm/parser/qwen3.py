@@ -288,7 +288,7 @@ class _ParamScan:
             not in_value or (not self.nested and self.last_char == "\n")
         ):
             if self.name is not None:
-                self.params[self.name] = self.value()
+                self.params.setdefault(self.name, self.value())
             self.name = name
             self.value_id += 1
             self.parts = []
@@ -375,7 +375,7 @@ def _qwen3_literal_arg_converter(
     scan = (cache or _ArgsScanCache()).scan_args(raw_args)
     params = dict(scan.params)
     if scan.name is not None:
-        params[scan.name] = scan.value()
+        params.setdefault(scan.name, scan.value())
     return json.dumps(params, ensure_ascii=False)
 
 
