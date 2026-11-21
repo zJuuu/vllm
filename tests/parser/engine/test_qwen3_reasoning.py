@@ -804,3 +804,54 @@ def test_think_end_quoted_in_argument_kept_non_streamed(mock_tokenizer, mock_req
     assert [(c.name, c.arguments) for c in tool_calls] == [
         ("write_file", '{"content": "x </think> y"}')
     ]
+
+
+@pytest.mark.parametrize("holdback", range(0, 21))
+@pytest.mark.parametrize(
+    "tokens",
+    [
+        ["plan", _THINK_END_ID, "\n\n", _TOOL_CALL_ID, "\n<function=f>\n"],
+        ["plan\n", _TOOL_CALL_ID, "\n<function=f>\n"],
+    ],
+    ids=["after_think_end", "implicit_end"],
+)
+def test_held_back_text_does_not_leak_tool_markup(mock_request, tokens, holdback):
+    """A stop string makes the detokenizer hold text back behind the ids."""
+    tokens = [
+        *tokens,
+        "<parameter=city>\nParis\n</parameter>\n</function>\n",
+        _TOOL_CALL_END_ID,
+    ]
+    chars = sorted({c for token in tokens if isinstance(token, str) for c in token})
+    char_ids = {c: 200 + i for i, c in enumerate(chars)}
+    mock_tokenizer = make_mock_tokenizer(
+        {**_QWEN3_VOCAB, **char_ids}, special_tokens=list(_QWEN3_VOCAB)
+    )
+    ids: list[int] = []
+    for token in tokens:
+        ids.extend([token] if isinstance(token, int) else [char_ids[c] for c in token])
+    parser = _Qwen3DelegatingParser(mock_tokenizer)
+    content, sent = "", 0
+    calls: dict[int, list[str]] = {}
+    for i, token_id in enumerate(ids):
+        finished = i == len(ids) - 1
+        text = mock_tokenizer.decode(ids[: i + 1])
+        visible = text if finished else text[: max(0, len(text) - holdback)]
+        delta = parser.parse_delta(
+            visible[sent:],
+            [token_id],
+            mock_request,
+            prompt_token_ids=[_THINK_START_ID],
+            finished=finished,
+        )
+        sent = max(sent, len(visible))
+        if delta is None:
+            continue
+        content += delta.content or ""
+        for tc in delta.tool_calls or []:
+            call = calls.setdefault(tc.index, ["", ""])
+            call[0] += tc.function.name or ""
+            call[1] += tc.function.arguments or ""
+
+    assert "<" not in content
+    assert list(calls.values()) == [["f", '{"city": "Paris"}']]

@@ -270,6 +270,12 @@ class ParserEngine(Parser):
         """See `ReasoningParser.adjust_initial_state_from_prompt`."""
         return
 
+    def take_pending_input(self) -> tuple[str, list[int]]:
+        text, token_ids = self._engine.take_pending_input()
+        text = self._deferred_content + text
+        self._deferred_content = ""
+        return text, token_ids
+
     def finish_streaming(self) -> DeltaMessage | None:
         events = self._engine.finish()
         if events or self._deferred_content:

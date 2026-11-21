@@ -71,6 +71,13 @@ class ReasoningParser:
         """Reasoning-end tokens that are also content, e.g. a tool-call start."""
         return frozenset()
 
+    def take_pending_input(self) -> tuple[str, list[int]]:
+        """Return the text and token ids received but not parsed yet.
+
+        Called when reasoning ends, to hand them to the tool parser.
+        """
+        return "", []
+
     def find_reasoning_end(self, token_ids: Sequence[int]) -> "ReasoningEnd | None":
         """Find the first reasoning end in `token_ids`.
 

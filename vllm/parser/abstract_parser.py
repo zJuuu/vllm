@@ -910,19 +910,38 @@ class DelegatingParser(Parser):
             if should_transition and not self._reasoning_engine_streams_all:
                 state.reasoning_ended = True
                 reasoning_transitioned = True
-                current_token_ids = self._extract_content_ids(delta_token_ids)
-                # Flush whenever the reasoning parser is engine-based (not only
-                # when _engine_based is True): it buffers the post-marker text
-                # (e.g. the "<" of "<tool_call>"), surfaced via finish_streaming().
-                flush_delta = (
-                    reasoning_parser.finish_streaming()  # type: ignore[union-attr, attr-defined]
-                    if reasoning_parser is not None
-                    and reasoning_parser.engine_based_streaming
-                    else None
-                )
+                pending_text = ""
+                flush_delta = None
+                if (
+                    reasoning_parser is not None
+                    and self._engine_based
+                    and self._tool_parser is not None
+                ):
+                    # Hand the input the reasoning engine still holds (e.g. a
+                    # tool-call token whose text the detokenizer holds back for
+                    # a stop string) to the tool parser unparsed, so its token
+                    # ids still bind to their text.
+                    pending_text, pending_ids = reasoning_parser.take_pending_input()
+                    current_token_ids = self._handed_off_token_ids(
+                        reasoning_parser,
+                        delta_token_ids,
+                        (delta_message.content if delta_message else None)
+                        or pending_text,
+                        pending_ids,
+                    )
+                else:
+                    current_token_ids = self._extract_content_ids(delta_token_ids)
+                    if (
+                        reasoning_parser is not None
+                        and reasoning_parser.engine_based_streaming
+                    ):
+                        # Flush whenever the reasoning parser is engine-based
+                        # (not only when _engine_based is True): it buffers the
+                        # post-marker text (e.g. the "<" of "<tool_call>").
+                        flush_delta = reasoning_parser.finish_streaming()  # type: ignore[attr-defined]
                 current_text = (
                     (delta_message.content if delta_message else None) or ""
-                ) + ((flush_delta.content if flush_delta else None) or "")
+                ) + ((flush_delta.content if flush_delta else None) or pending_text)
                 if self._engine_based:
                     if self._tool_parser is not None:
                         # The tool-call phase below consumes current_text.
@@ -1008,6 +1027,32 @@ class DelegatingParser(Parser):
                 delta_message = None
 
         return delta_message
+
+    def _handed_off_token_ids(
+        self,
+        reasoning_parser: ReasoningParser,
+        delta_token_ids: Sequence[int],
+        content: str,
+        pending_ids: list[int],
+    ) -> list[int]:
+        """Token ids of the content handed to the tool parser.
+
+        Reasoning ended at its end token in this delta, or at a token that
+        also opens the content (e.g. a tool-call start), whose id may have
+        come in an earlier delta. Held ids that came earlier go first.
+        """
+        delta_ids = list(delta_token_ids)
+        content_ids = None
+        for token_id in reasoning_parser.implicit_reasoning_end_token_ids:
+            if content.startswith(self.model_tokenizer.decode([token_id])):
+                if token_id in delta_ids:
+                    content_ids = delta_ids[delta_ids.index(token_id) :]
+                else:
+                    content_ids = [token_id, *delta_ids]
+                break
+        if content_ids is None:
+            content_ids = self._extract_content_ids(delta_ids)
+        return [i for i in pending_ids if i not in delta_ids] + content_ids
 
     def count_reasoning_tokens(self, token_ids: Sequence[int]) -> int:
         """Count reasoning tokens through the configured reasoning parser."""
