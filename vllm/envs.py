@@ -263,6 +263,7 @@ if TYPE_CHECKING:
     VLLM_MAX_TOKENS_PER_EXPERT_FP4_MOE: int = 163840
     VLLM_TOOL_PARSE_REGEX_TIMEOUT_SECONDS: int = 1
     VLLM_ENFORCE_STRICT_TOOL_CALLING: bool = True
+    VLLM_ANSWER_ONLY_WITHOUT_TOOL_CALLS: bool = False
     VLLM_BEAM_ALWAYS_CONSTRAIN_OUTPUT: bool = True
     VLLM_MQ_MAX_CHUNK_BYTES_MB: int = 16
     VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: int = 300
@@ -2004,6 +2005,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Enforce function parameter schemas in structural-tag based tool calling.
     "VLLM_ENFORCE_STRICT_TOOL_CALLING": lambda: (
         os.getenv("VLLM_ENFORCE_STRICT_TOOL_CALLING", "True").lower() in ("true", "1")
+    ),
+    # When no tool call may be returned (tool_choice "none", or no tools after
+    # tool use), keep tool-call markup out of the answer of tool parsers that
+    # declare it, and ask the model to answer from the conversation.
+    "VLLM_ANSWER_ONLY_WITHOUT_TOOL_CALLS": lambda: (
+        os.getenv("VLLM_ANSWER_ONLY_WITHOUT_TOOL_CALLS", "False").lower()
+        in ("true", "1")
     ),
     # Constrain every `beam` output to its response template's format, also
     # without tool or structured output constraints.

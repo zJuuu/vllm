@@ -11,6 +11,7 @@ from openai.types.responses import ToolChoiceCustom, ToolChoiceFunction
 from pydantic import TypeAdapter, ValidationError
 from xgrammar import StructuralTag
 from xgrammar.structural_tag import (
+    AnyTextFormat,
     ConstStringFormat,
     Format,
     GrammarFormat,
@@ -21,6 +22,7 @@ from xgrammar.structural_tag import (
     TriggeredTagsFormat,
 )
 
+from vllm import envs
 from vllm.entrypoints.generate.base.protocol import (
     DeltaMessage,
     ExtractedToolCallInformation,
@@ -344,6 +346,54 @@ def _xgrammar_supports(structured_outputs: StructuredOutputsParams) -> bool:
     return True
 
 
+# Without it a model that still needs a tool writes an empty or invented reply.
+NO_TOOL_CALL_INSTRUCTIONS = (
+    "Tools cannot be called for this reply. Answer only from the information "
+    "already in the conversation, and say plainly what you could not look up."
+)
+
+
+def forbids_tool_calls(request: ChatCompletionRequest | ResponsesRequest) -> bool:
+    """Whether no tool call may be returned for `request`.
+
+    That is `tool_choice="none"` with tools, or a chat request without tools
+    whose history holds tool calls or results.
+    """
+    if request.tools:
+        return request.tool_choice == "none"
+    if not isinstance(request, ChatCompletionRequest):
+        return False
+    return any(
+        message.get("role") == "tool" or message.get("tool_calls")
+        for message in request.messages
+    )
+
+
+def answers_without_tool_calls(
+    parser: type[Parser], request: ChatCompletionRequest | ResponsesRequest
+) -> bool:
+    """Whether `request` gets the answer-only constraint and instructions."""
+    return (
+        envs.VLLM_ANSWER_ONLY_WITHOUT_TOOL_CALLS
+        and parser.tool_parser_cls is not None
+        and bool(parser.tool_parser_cls.answer_only_excludes)
+        and forbids_tool_calls(request)
+    )
+
+
+def with_no_tool_call_instructions(messages: list) -> list:
+    """Return *messages* with `NO_TOOL_CALL_INSTRUCTIONS` in the system prompt."""
+    first = messages[0] if messages else None
+    if (
+        isinstance(first, dict)
+        and first.get("role") in ("system", "developer")
+        and isinstance(first.get("content"), str)
+    ):
+        content = f"{first['content']}\n\n{NO_TOOL_CALL_INSTRUCTIONS}"
+        return [{**first, "content": content}, *messages[1:]]
+    return [{"role": "system", "content": NO_TOOL_CALL_INSTRUCTIONS}, *messages]
+
+
 class DelegatingParser(Parser):
     """A Parser implementation that delegates to separate ReasoningParser and
     ToolParser instances.
@@ -499,8 +549,31 @@ class DelegatingParser(Parser):
         if self._reasoning_parser is not None:
             request = self._reasoning_parser.adjust_request(request)
         if self._tool_parser is not None:
+            request = self._apply_answer_only(request)
             request = self._apply_structural_tag(request)
             request = self._tool_parser.adjust_request(request)
+        return request
+
+    def _apply_answer_only(
+        self, request: ChatCompletionRequest | ResponsesRequest
+    ) -> ChatCompletionRequest | ResponsesRequest:
+        """Keep tool-call markup out of an answer that may not call a tool.
+
+        The call would be dropped and leave an empty reply.  The grammar
+        applies once reasoning ends, and a response format takes precedence.
+        """
+        if (
+            not answers_without_tool_calls(type(self), request)
+            or request.extract_structured_outputs() is not None
+        ):
+            return request
+        assert self._tool_parser is not None
+        excludes = list(self._tool_parser.answer_only_excludes)
+        request.structured_outputs = StructuredOutputsParams(
+            structural_tag=json.dumps(
+                StructuralTag(format=AnyTextFormat(excludes=excludes)).model_dump()
+            )
+        )
         return request
 
     def _apply_structural_tag(

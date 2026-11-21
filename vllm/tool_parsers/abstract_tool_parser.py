@@ -66,6 +66,9 @@ class ToolParser:
     # Constrain non-strict tools under ``tool_choice="auto"`` when the
     # request has a response format, so calls stay possible next to it.
     strict_tools_with_response_format: bool = False
+    # Text the answer may not contain when no tool call may be returned
+    # (VLLM_ANSWER_ONLY_WITHOUT_TOOL_CALLS); empty leaves the answer free.
+    answer_only_excludes: tuple[str, ...] = ()
     engine_based_streaming: bool = False
 
     def __init_subclass__(cls, **kwargs: Any) -> None:

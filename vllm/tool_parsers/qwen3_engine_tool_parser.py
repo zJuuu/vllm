@@ -7,3 +7,4 @@ from vllm.parser.engine.registered_adapters import Qwen3ParserToolAdapter
 class Qwen3EngineToolParser(Qwen3ParserToolAdapter):  # type: ignore[valid-type, misc]
     structural_tag_model = "qwen_3_coder"
     strict_tools_with_response_format = True
+    answer_only_excludes = ("<tool_call>", "<function=")

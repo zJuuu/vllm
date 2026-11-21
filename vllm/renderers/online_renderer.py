@@ -52,6 +52,10 @@ from vllm.inputs import (
 )
 from vllm.logger import init_logger
 from vllm.parser import Parser, ParserManager
+from vllm.parser.abstract_parser import (
+    answers_without_tool_calls,
+    with_no_tool_call_instructions,
+)
 from vllm.renderers import (
     BaseRenderer,
     ChatParams,
@@ -315,9 +319,14 @@ class OnlineRenderer:
             if error_check_ret is not None:
                 return error_check_ret
 
+            messages = request.messages
+            if self.parser is not None and answers_without_tool_calls(
+                self.parser, request
+            ):
+                messages = with_no_tool_call_instructions(messages)
             conversation, engine_inputs = await self.preprocess_chat(
                 request,
-                request.messages,
+                messages,
                 default_template=self.chat_template,
                 default_template_content_format=self.chat_template_content_format,
                 default_template_kwargs=self.default_chat_template_kwargs,
@@ -392,6 +401,8 @@ class OnlineRenderer:
                 else None
             ),
         )
+        if self.parser is not None and answers_without_tool_calls(self.parser, request):
+            messages = with_no_tool_call_instructions(messages)
         chat_template_kwargs = self.effective_chat_template_kwargs(request)
         _, engine_inputs = await self.preprocess_chat(
             request,

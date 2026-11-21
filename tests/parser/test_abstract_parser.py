@@ -355,3 +355,106 @@ def test_structured_outputs_to_format_rejects_deeply_nested_string(field):
         )
     with pytest.raises(VLLMValidationError, match="nested too deeply"):
         structured_outputs_to_format(StructuredOutputsParams(**{field: value}))
+
+
+class TestAnswerOnlyWithoutToolCalls:
+    """VLLM_ANSWER_ONLY_WITHOUT_TOOL_CALLS keeps calls out of a forbidden reply."""
+
+    TOOL = {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "parameters": {"type": "object", "properties": {"city": {}}},
+        },
+    }
+    HISTORY = [
+        {"role": "user", "content": "Weather in Paris?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "timeout"},
+    ]
+
+    class QwenParser(DelegatingParser):
+        tool_parser_cls = Qwen3EngineToolParser
+
+    @pytest.fixture(autouse=True)
+    def enabled(self, monkeypatch):
+        monkeypatch.setenv("VLLM_ANSWER_ONLY_WITHOUT_TOOL_CALLS", "1")
+
+    def _adjust(self, **kwargs) -> ChatCompletionRequest:
+        request = ChatCompletionRequest(messages=self.HISTORY, model="m", **kwargs)
+        out = self.QwenParser(MagicMock(), tools=request.tools).adjust_request(request)
+        assert isinstance(out, ChatCompletionRequest)
+        return out
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{"tools": [TOOL], "tool_choice": "none"}, {}],
+        ids=["tool_choice_none", "no_tools_after_tool_use"],
+    )
+    def test_answer_excludes_tool_call_markup(self, kwargs):
+        out = self._adjust(**kwargs)
+
+        assert out.structured_outputs is not None
+        grammar = Grammar.from_structural_tag(out.structured_outputs.structural_tag)
+        assert _is_grammar_accept_string(grammar, "The lookup timed out.")
+        assert not _is_grammar_accept_string(
+            grammar, "<tool_call>\n<function=get_weather>\n"
+        )
+        assert not _is_grammar_accept_string(grammar, "Let me retry <function=x>")
+
+    def test_auto_and_response_format_unchanged(self):
+        assert (
+            self._adjust(tools=[self.TOOL], tool_choice="auto").structured_outputs
+            is None
+        )
+        out = self._adjust(
+            tools=[self.TOOL],
+            tool_choice="none",
+            response_format={"type": "json_object"},
+        )
+        assert out.response_format is not None
+        assert out.structured_outputs is None
+
+    def test_disabled_by_default(self, monkeypatch):
+        monkeypatch.delenv("VLLM_ANSWER_ONLY_WITHOUT_TOOL_CALLS")
+        out = self._adjust(tools=[self.TOOL], tool_choice="none")
+        assert out.structured_outputs is None
+
+    @pytest.mark.parametrize(
+        "messages, expected",
+        [
+            (
+                [{"role": "system", "content": "Be brief."}],
+                [{"role": "system", "content": "Be brief.\n\n" + "{note}"}],
+            ),
+            (
+                [{"role": "user", "content": "Hi"}],
+                [
+                    {"role": "system", "content": "{note}"},
+                    {"role": "user", "content": "Hi"},
+                ],
+            ),
+        ],
+        ids=["append_to_system", "insert_system"],
+    )
+    def test_instructions_in_system_prompt(self, messages, expected):
+        from vllm.parser.abstract_parser import (
+            NO_TOOL_CALL_INSTRUCTIONS,
+            with_no_tool_call_instructions,
+        )
+
+        expected = [
+            {**m, "content": m["content"].replace("{note}", NO_TOOL_CALL_INSTRUCTIONS)}
+            for m in expected
+        ]
+        assert with_no_tool_call_instructions(messages) == expected
