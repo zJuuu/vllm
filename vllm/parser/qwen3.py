@@ -453,6 +453,7 @@ def qwen3_config(
     tool_end: str = TOOL_CALL_END,
     turn_boundary_tokens: frozenset[str] = frozenset(),
     literal_value_markup: bool = False,
+    prose_tool_opener_is_content: bool = False,
 ) -> ParserEngineConfig:
     config = ParserEngineConfig(
         name=name,
@@ -584,6 +585,7 @@ def qwen3_config(
         stream_arg_deltas=True,
         strip_trailing_reasoning_whitespace=False,
         tool_args_json=False,
+        prose_tool_opener_is_content=prose_tool_opener_is_content,
     )
     if not literal_value_markup:
         return config
@@ -641,6 +643,7 @@ class Qwen3Parser(ParserEngine):
                 tool_end=self.TOOL_END,
                 turn_boundary_tokens=self.TURN_BOUNDARIES,
                 literal_value_markup=True,
+                prose_tool_opener_is_content=True,
             ),
         )
         super().__init__(

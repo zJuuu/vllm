@@ -131,6 +131,10 @@ class ParserEngineConfig:
     # it does not allow stays argument text, e.g. markup quoted in a value.
     tool_args_checker: Callable[[], ToolArgsChecker] | None = None
 
+    # A line of text after a tool-call opener that does not start with
+    # markup means the opener was written in prose: both go back to content.
+    prose_tool_opener_is_content: bool = False
+
     # Special tokens exempt from auto-drop but not state-machine terminals.
     preserve_tokens: frozenset[str] = field(default_factory=frozenset)
 

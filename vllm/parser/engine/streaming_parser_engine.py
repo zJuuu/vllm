@@ -242,6 +242,8 @@ class StreamingParserEngine:
         self._message_header_token_count = 0
         self._in_skipped_tool_span = False
         self._tool_args_checker: ToolArgsChecker | None = None
+        self._preamble_opener = ""
+        self._preamble_text = ""
         self._reset_args_state()
         self._reset_json_collection_state()
 
@@ -337,6 +339,12 @@ class StreamingParserEngine:
             events.append(self._emit_arg_chunk(self._args_buffer))
             self._args_buffer = ""
             self._args_safe_end = 0
+
+        if (
+            self.state == ParserState.TOOL_PREAMBLE
+            and self.config.prose_tool_opener_is_content
+        ):
+            events.extend(self._prose_tool_opener())
 
         if self.state in (
             ParserState.TOOL_PREAMBLE,
@@ -544,6 +552,14 @@ class StreamingParserEngine:
         return self._apply_transition(transition, value, token_count)
 
     def _emit_for_state(self, text: str, token_count: int = 0) -> list[SemanticEvent]:
+        if (
+            self.state == ParserState.TOOL_PREAMBLE
+            and self.config.prose_tool_opener_is_content
+        ):
+            self._preamble_text += text
+            if "\n" not in self._preamble_text.lstrip():
+                return []
+            return self._prose_tool_opener(token_count)
         if self.state == ParserState.MESSAGE_HEADER:
             self._message_header_buffer += text
             self._message_header_token_count += token_count
@@ -567,6 +583,27 @@ class StreamingParserEngine:
                 )
             ]
         return []
+
+    def _prose_tool_opener(self, token_count: int = 0) -> list[SemanticEvent]:
+        """Return a tool opener followed by a line of prose to content.
+
+        Markup after the opener (`<...`) stays held, so a malformed or cut
+        call is still dropped.
+        """
+        text = self._preamble_text.lstrip()
+        if not text or text.startswith("<"):
+            return []
+        self.state = ParserState.CONTENT
+        text = self._preamble_opener + self._preamble_text
+        self._preamble_opener = self._preamble_text = ""
+        return [
+            SemanticEvent(
+                EventType.TEXT_CHUNK,
+                value=text,
+                tool_index=self.tool_index,
+                token_count=token_count,
+            )
+        ]
 
     def _on_content(self, text: str, token_count: int = 0) -> list[SemanticEvent]:
         if not text:
@@ -599,6 +636,10 @@ class StreamingParserEngine:
             self._message_header_token_count = 0
 
         self.state = transition.next_state
+        if self.config.prose_tool_opener_is_content:
+            in_preamble = self.state == ParserState.TOOL_PREAMBLE
+            self._preamble_opener = value if in_preamble else ""
+            self._preamble_text = ""
         if self._tool_args_checker_cls is not None and previous_state != self.state:
             self._tool_args_checker = (
                 self._tool_args_checker_cls()

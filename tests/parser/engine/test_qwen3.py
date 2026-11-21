@@ -1783,3 +1783,39 @@ def test_streamed_indexes_skip_calls_without_a_name(mock_tokenizer, mock_request
 
     assert sorted(set(indexes)) == [0, 1]
     assert indexes == sorted(indexes)
+
+
+@pytest.mark.parametrize("size", [1, 4])
+@pytest.mark.parametrize(
+    "text, content, names",
+    [
+        ("Use <tool_call> blocks.", "Use <tool_call> blocks.", []),
+        (
+            "Use <tool_call> blocks.\n" + _qwen3_call("get_weather", city="Paris"),
+            "Use <tool_call> blocks.",
+            ["get_weather"],
+        ),
+    ],
+    ids=["prose_only", "prose_then_call"],
+)
+def test_prose_tool_call_opener_stays_content(
+    mock_tokenizer, mock_request, text, content, names, size
+):
+    from vllm.parser.qwen3 import Qwen3Parser
+
+    def make_parser():
+        return Qwen3Parser(
+            mock_tokenizer, chat_template_kwargs={"enable_thinking": False}
+        )
+
+    result = make_parser().extract_tool_calls(text, mock_request)
+    assert result.content == content
+    assert [c.function.name for c in result.tool_calls] == names
+
+    parser = make_parser()
+    results = simulate_tool_streaming(
+        parser, mock_request, [text[i : i + size] for i in range(0, len(text), size)]
+    )
+    results.append((parser.finish_streaming(), text))
+    assert collect_content(results).strip() == content
+    assert collect_function_name(results) == (names[0] if names else None)
