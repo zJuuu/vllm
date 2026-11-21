@@ -142,6 +142,7 @@ class ParserEngine(Parser):
         self._engine = StreamingParserEngine(
             parser_engine_config, tokenizer, vocab=self.vocab
         )
+        self._engine.is_tool_name = lambda name: find_tool_name(self._tools, name)
 
         self._has_reasoning = (
             "THINK_END" in parser_engine_config.token_id_terminals
@@ -1127,6 +1128,11 @@ class ParserEngine(Parser):
         safe_json, value_streams = self._safe_arg_prefix(current_json, slot.string_keys)
 
         if not safe_json:
+            if self._arg_value_extender is not None:
+                # Nothing streams yet (e.g. no parameter has started); skip
+                # the conversion for deltas the extender takes.
+                slot.extend_open_value = self._arg_value_extender(slot.args)
+                slot.open_value_streams = False
             return None
         if prev and not safe_json.startswith(prev):
             if self._arg_value_extender is not None:

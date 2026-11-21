@@ -5,7 +5,7 @@ incremental lexing, and state-machine-driven semantic event emission."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from vllm.parser.engine.events import EventType, SemanticEvent
@@ -19,6 +19,7 @@ from vllm.parser.engine.incremental_lexer import (
 from vllm.parser.engine.parser_engine_config import (
     ParserEngineConfig,
     ParserState,
+    ToolArgsChecker,
     ToolCallBodyCollection,
     Transition,
 )
@@ -169,6 +170,10 @@ class StreamingParserEngine:
             self._compute_reasoning_markup_terminals()
         )
 
+        self._tool_args_checker_cls = config.tool_args_checker
+        # Whether a name is one of the request's tools; set by the parser.
+        self.is_tool_name: Callable[[str], bool] = lambda name: False
+
         self.skip_tool_parsing = False
         self.skip_reasoning_parsing = False
         self.reset(initial_state=initial_state)
@@ -238,6 +243,10 @@ class StreamingParserEngine:
         self._message_header_buffer = ""
         self._message_header_token_count = 0
         self._in_skipped_tool_span = False
+        self._tool_args_checker: ToolArgsChecker | None = None
+        # A terminal the checker decides on after more input, and that input.
+        self._held: list[tuple[str | None, str, int]] | None = None
+        self._held_text = ""
         self._reset_args_state()
         self._reset_json_collection_state()
 
@@ -263,9 +272,7 @@ class StreamingParserEngine:
                     has_special = True
                     break
             if not has_special:
-                events = self._emit_for_state(
-                    delta_text, token_count=len(delta_token_ids)
-                )
+                events = self._on_content(delta_text, token_count=len(delta_token_ids))
                 self._record_reasoning_tokens(events)
                 return events
 
@@ -275,7 +282,7 @@ class StreamingParserEngine:
             item = scanner_items[0]
             lex_tokens = self._lexer.feed(item.text, item.token_texts, item.token_count)
             if len(lex_tokens) == 1 and lex_tokens[0].terminal == CONTENT_TERMINAL:
-                events = self._emit_for_state(
+                events = self._on_content(
                     lex_tokens[0].value,
                     token_count=lex_tokens[0].token_count,
                 )
@@ -328,6 +335,8 @@ class StreamingParserEngine:
         events.extend(
             self._process_lex_tokens(self._lexer.flush(drop_held=drop_held))
         )
+        if self._held is not None:
+            events.extend(self._decide_held(finished=True))
 
         if self._args_buffer:
             events.append(self._emit_arg_chunk(self._args_buffer))
@@ -452,6 +461,8 @@ class StreamingParserEngine:
     def _on_terminal(
         self, terminal: str, value: str, token_count: int = 0
     ) -> list[SemanticEvent]:
+        if self._held is not None:
+            return self._hold(terminal, value, token_count)
         key = (self.state, terminal)
         transition = self.config.transitions.get(key)
 
@@ -521,6 +532,14 @@ class StreamingParserEngine:
         if transition.skip_in_token_id_mode and self._ever_had_token_ids:
             return self._emit_for_state(value, token_count)
 
+        if self.state == ParserState.TOOL_ARGS and self._tool_args_checker is not None:
+            allowed = self._tool_args_checker.allows(terminal, "", False)
+            if allowed is None:
+                self._held = [(terminal, value, token_count)]
+                return []
+            if not allowed:
+                return self._emit_for_state(value, token_count)
+
         return self._apply_transition(transition, value, token_count)
 
     def _emit_for_state(self, text: str, token_count: int = 0) -> list[SemanticEvent]:
@@ -533,6 +552,8 @@ class StreamingParserEngine:
                 return self._feed_json_collection_text(text)
             if self.config.tool_args_json:
                 return self._feed_args_text(text)
+            if self._tool_args_checker is not None:
+                self._tool_args_checker.feed(text)
             return [self._emit_arg_chunk(text, token_count)]
         content_type = self.config.content_events.get(self.state)
         if content_type is not None:
@@ -549,7 +570,39 @@ class StreamingParserEngine:
     def _on_content(self, text: str, token_count: int = 0) -> list[SemanticEvent]:
         if not text:
             return []
+        if self._held is not None:
+            return self._hold(None, text, token_count)
         return self._emit_for_state(text, token_count)
+
+    def _hold(
+        self, terminal: str | None, value: str, token_count: int
+    ) -> list[SemanticEvent]:
+        assert self._held is not None
+        self._held.append((terminal, value, token_count))
+        self._held_text += value
+        return self._decide_held(finished=False)
+
+    def _decide_held(self, finished: bool) -> list[SemanticEvent]:
+        """Apply the held terminal or pass it on as text, once decided."""
+        assert self._held is not None and self._tool_args_checker is not None
+        (terminal, value, token_count), *rest = self._held
+        assert terminal is not None
+        allowed = self._tool_args_checker.allows(terminal, self._held_text, finished)
+        if allowed is None:
+            return []
+        self._held = None
+        self._held_text = ""
+        if allowed:
+            transition = self.config.transitions[(self.state, terminal)]
+            events = self._apply_transition(transition, value, token_count)
+        else:
+            events = self._emit_for_state(value, token_count)
+        for item_terminal, item_value, item_count in rest:
+            if item_terminal is None:
+                events.extend(self._on_content(item_value, item_count))
+            else:
+                events.extend(self._on_terminal(item_terminal, item_value, item_count))
+        return events
 
     def _apply_transition(
         self,
@@ -577,6 +630,12 @@ class StreamingParserEngine:
             self._message_header_token_count = 0
 
         self.state = transition.next_state
+        if self._tool_args_checker_cls is not None and previous_state != self.state:
+            self._tool_args_checker = (
+                self._tool_args_checker_cls(self.is_tool_name)
+                if self.state == ParserState.TOOL_ARGS
+                else None
+            )
 
         for event_type in transition.events:
             if event_type == EventType.TOOL_CALL_START:
@@ -590,6 +649,11 @@ class StreamingParserEngine:
             )
             if event_type == EventType.TEXT_CHUNK and not event_value:
                 continue
+            if (
+                event_type == EventType.ARG_VALUE_CHUNK
+                and self._tool_args_checker is not None
+            ):
+                self._tool_args_checker.feed(event_value)
             events.append(
                 SemanticEvent(
                     event_type,
