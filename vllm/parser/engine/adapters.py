@@ -145,6 +145,10 @@ class ParserEngineReasoningAdapter(ReasoningParser):
         with self._skip_tool_parsing():
             return self._parser_engine.finish_streaming()
 
+    def take_pending_input(self) -> tuple[str, list[int]]:
+        """Input held back when reasoning ended, for the tool parser."""
+        return self._parser_engine.take_pending_input()
+
     def get_streaming_fallback_content(
         self,
         text: str,

@@ -403,6 +403,17 @@ class StreamingParserEngine:
         self._record_reasoning_tokens(events)
         return events
 
+    def take_pending_input(self) -> tuple[str, list[int]]:
+        """Return the input not parsed yet, as text and token ids.
+
+        That is a partial terminal held by the lexer, and text and token ids
+        the scanner holds until the terminals' text arrives.
+        """
+        text, token_ids = self._scanner.take_pending()
+        text = self._lexer.buffer + text
+        self._lexer.reset()
+        return text, token_ids
+
     def parse_complete(self, text: str) -> list[SemanticEvent]:
         token_ids: list[int] = []
         events = self.feed(text, token_ids)

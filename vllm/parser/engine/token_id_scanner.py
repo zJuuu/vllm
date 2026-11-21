@@ -185,6 +185,15 @@ class TokenIDScanner:
 
         return prefix_items + results
 
+    def take_pending(self) -> tuple[str, list[int]]:
+        """Return the held text and unresolved terminal ids, and forget them."""
+        pending = (
+            self._deferred_post_text,
+            [terminal.token_id for terminal in self._deferred_terminals],
+        )
+        self.reset()
+        return pending
+
     def flush_pending(self) -> list[LexerInput]:
         if not self._deferred_terminals and not self._deferred_post_text:
             return []
