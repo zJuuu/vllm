@@ -63,6 +63,9 @@ class ToolParser:
     # unset. Operator flags override it, and
     # ``VLLM_ENFORCE_STRICT_TOOL_CALLING=0`` still disables structural tags.
     default_tool_strict_level: ToolStrictLevel = ToolStrictLevel.AUTO
+    # Constrain non-strict tools under ``tool_choice="auto"`` when the
+    # request has a response format, so calls stay possible next to it.
+    strict_tools_with_response_format: bool = False
     engine_based_streaming: bool = False
 
     def __init_subclass__(cls, **kwargs: Any) -> None:

@@ -175,7 +175,14 @@ class TestToolChoice_Plus_ResponseFormat:
             tool_choice="auto",
             response_format=self._json_schema_response_format(),
         )
-        parser = self._setup_qwen_parser(tools)
+
+        class NoStrictQwenToolParser(Qwen3EngineToolParser):
+            strict_tools_with_response_format = False
+
+        class TestParser(DelegatingParser):
+            tool_parser_cls = NoStrictQwenToolParser
+
+        parser = TestParser(MagicMock(), tools=tools)
 
         # There must be a warning that tool calls are disabled
         # Consume that warning
@@ -186,6 +193,24 @@ class TestToolChoice_Plus_ResponseFormat:
         assert out.response_format is not None
         assert out.structured_outputs is None
         mock_warn.assert_called_once()
+
+    def test_qwen_auto_with_non_strict_tools_keeps_calls(self):
+        """qwen3_coder keeps tools callable next to a response format."""
+        tools = self._tools(strict=False)
+        request = self._setup_request(
+            tools=tools,
+            tool_choice="auto",
+            response_format=self._json_schema_response_format(),
+        )
+        out = self._setup_qwen_parser(tools).adjust_request(request)
+
+        assert isinstance(out, ChatCompletionRequest)
+        assert out.tool_choice == "auto"
+        assert out.response_format is None
+        grammar = Grammar.from_structural_tag(out.structured_outputs.structural_tag)
+        assert _is_grammar_accept_string(grammar, '{"text": "hi"}')
+        assert _is_grammar_accept_string(grammar, self._qwen_tool_call())
+        assert not _is_grammar_accept_string(grammar, "Hello")
 
     def test_when_model_does_not_have_structural_tag(self):
         """Note(arpera):
