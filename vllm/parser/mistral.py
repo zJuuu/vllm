@@ -952,7 +952,7 @@ class MistralParser(ParserEngine):
         ):
             deltas.append(
                 DeltaToolCall(
-                    index=idx,
+                    index=self._tool_slots[idx].index,
                     function=DeltaFunctionCall(arguments=event.value),
                 )
             )

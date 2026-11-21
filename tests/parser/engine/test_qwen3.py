@@ -1821,3 +1821,27 @@ class TestMarkupInParameterValues:
 
         assert self._stream(make_parser(), mock_request, text, 4) == expected
         assert longest < 200
+
+
+@pytest.mark.parametrize("size", [1, 5])
+def test_streamed_indexes_skip_calls_without_a_name(mock_tokenizer, mock_request, size):
+    from vllm.parser.qwen3 import Qwen3Parser
+
+    text = (
+        "<tool_call>\n</tool_call>\n"
+        + _qwen3_call("get_weather", city="Paris")
+        + _qwen3_call("get_weather", city="Rome")
+    )
+    parser = Qwen3Parser(
+        mock_tokenizer, chat_template_kwargs={"enable_thinking": False}
+    )
+    results = simulate_tool_streaming(
+        parser, mock_request, [text[i : i + size] for i in range(0, len(text), size)]
+    )
+    results.append((parser.finish_streaming(), text))
+    indexes = [
+        tc.index for delta, _ in results if delta for tc in delta.tool_calls or []
+    ]
+
+    assert sorted(set(indexes)) == [0, 1]
+    assert indexes == sorted(indexes)
