@@ -855,3 +855,46 @@ def test_held_back_text_does_not_leak_tool_markup(mock_request, tokens, holdback
 
     assert "<" not in content
     assert list(calls.values()) == [["f", '{"city": "Paris"}']]
+
+
+@pytest.mark.parametrize(
+    "prompt_ids, reasoning, content",
+    [
+        ([_IM_START_ID, _TEXT_ID, _THINK_START_ID], "plan\n", "\n\nAnswer."),
+        (
+            [_IM_START_ID, _TEXT_ID, _THINK_START_ID, _THINK_END_ID],
+            None,
+            "plan\n</think>\n\nAnswer.",
+        ),
+    ],
+    ids=["prompt_opens_reasoning", "prompt_closes_reasoning"],
+)
+def test_thinking_off_follows_an_open_think_in_the_prompt(
+    mock_tokenizer, mock_request, prompt_ids, reasoning, content
+):
+    """A think-on switch in a message reopens reasoning with thinking off."""
+    text = "plan\n</think>\n\nAnswer."
+    kwargs = {"chat_template_kwargs": {"enable_thinking": False}}
+
+    parser = _Qwen3DelegatingParser(mock_tokenizer, **kwargs)
+    parser.set_prompt_token_ids(prompt_ids)
+    assert parser.parse(text, mock_request) == (reasoning, content, [])
+
+    parser = _Qwen3DelegatingParser(mock_tokenizer, **kwargs)
+    chunks = [
+        ("plan\n", _TEXT_ID),
+        ("</think>", _THINK_END_ID),
+        ("\n\nAnswer.", _TEXT_ID),
+    ]
+    streamed_reasoning = ""
+    for i, (chunk, token_id) in enumerate(chunks):
+        delta = parser.parse_delta(
+            chunk,
+            [token_id],
+            mock_request,
+            prompt_token_ids=prompt_ids,
+            finished=i == len(chunks) - 1,
+        )
+        if delta is not None:
+            streamed_reasoning += delta.reasoning or ""
+    assert (streamed_reasoning or None) == reasoning

@@ -19,6 +19,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import json
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import regex as re
@@ -31,6 +32,7 @@ from vllm.parser.engine.parser_engine_config import (
     ParserState,
     Transition,
 )
+from vllm.v1.token_buffer import rfind_tokens
 
 if TYPE_CHECKING:
     from vllm.entrypoints.openai.chat_completion.protocol import (
@@ -666,6 +668,25 @@ class Qwen3Parser(ParserEngine):
             self._arg_value_extender = functools.partial(
                 _qwen3_literal_arg_value_extender, cache=cache
             )
+
+    def set_prompt_token_ids(self, prompt_token_ids: Sequence[int]) -> None:
+        """Parse reasoning when the prompt opens it with thinking off.
+
+        A think-on switch in the conversation makes the chat template open a
+        reasoning block although `enable_thinking` is false.
+        """
+        if not self.thinking_enabled:
+            i = rfind_tokens(prompt_token_ids, self._reasoning_boundary_token_ids)
+            if i >= 0 and prompt_token_ids[i] == self._reasoning_start_token_id:
+                self.thinking_enabled = True
+                self.parser_engine_config = dataclasses.replace(
+                    self.parser_engine_config,
+                    initial_state=ParserState.REASONING,
+                    wait_for_reasoning=True,
+                )
+                self._engine.config = self.parser_engine_config
+                self._reset()
+        super().set_prompt_token_ids(prompt_token_ids)
 
     def _accept_tool_name(self, name: str) -> bool:
         # Words after `<function=` are prose that quotes the syntax.
