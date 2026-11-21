@@ -961,28 +961,20 @@ class TestArgValueExtender:
         from vllm.parser import qwen3
 
         mock_request.tools = [write_tool]
-        param_re = qwen3._PARAM_RE
+        tag_re = qwen3._ARG_TAG_RE
         matches = 0
 
         class CountingPattern:
             def __getattr__(self, name):
-                return getattr(param_re, name)
+                return getattr(tag_re, name)
 
             def finditer(self, *args):
                 nonlocal matches
-                for match in param_re.finditer(*args):
+                for match in tag_re.finditer(*args):
                     matches += 1
                     yield match
 
-            def sub(self, repl, *args):
-                def count(match):
-                    nonlocal matches
-                    matches += 1
-                    return repl
-
-                return param_re.sub(count, *args)
-
-        monkeypatch.setattr(qwen3, "_PARAM_RE", CountingPattern())
+        monkeypatch.setattr(qwen3, "_ARG_TAG_RE", CountingPattern())
         text = LOOP_HEAD + LOOP_PARAMS * 200 + LOOP_TAIL
         simulate_tool_streaming(
             qwen3.Qwen3Parser(
@@ -992,7 +984,8 @@ class TestArgValueExtender:
             [text[i : i + 4] for i in range(0, len(text), 4)],
         )
 
-        assert matches == len(param_re.findall(text))
+        # Conversions resume after the last tag; the call end rescans once.
+        assert matches <= 2 * len(tag_re.findall(text))
 
     def test_value_closed_by_next_parameter_needs_that_parameter(self):
         from vllm.parser.qwen3 import _ClosedParams, _qwen3_arg_converter
@@ -1566,3 +1559,188 @@ class TestFinishFlushPreservesRawArgsCalls:
         call = result.tool_calls[0]
         assert call.function.name == "get_weather"
         assert json.loads(call.function.arguments) == {"city": "Paris"}
+
+
+def _qwen3_call(name: str, **params: str) -> str:
+    body = "".join(f"<parameter={k}>\n{v}\n</parameter>\n" for k, v in params.items())
+    return f"<tool_call>\n<function={name}>\n{body}</function>\n</tool_call>"
+
+
+class TestMarkupInParameterValues:
+    """Call markup quoted inside a value stays in the value."""
+
+    @pytest.fixture
+    def make_parser(self, mock_tokenizer):
+        from vllm.parser.qwen3 import Qwen3Parser
+
+        return lambda: Qwen3Parser(
+            mock_tokenizer, chat_template_kwargs={"enable_thinking": False}
+        )
+
+    def _stream(self, parser, request, text, size):
+        results = simulate_tool_streaming(
+            parser, request, [text[i : i + size] for i in range(0, len(text), size)]
+        )
+        results.append((parser.finish_streaming(), text))
+        calls: dict[int, list[str]] = {}
+        for delta, _ in results:
+            for tc in (delta.tool_calls if delta else None) or []:
+                call = calls.setdefault(tc.index, ["", ""])
+                call[0] += tc.function.name or ""
+                call[1] += tc.function.arguments or ""
+        return [tuple(call) for call in calls.values()]
+
+    @pytest.mark.parametrize("size", [1, 3, 7])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "a </parameter> b",
+            "a\n</parameter>\nb",
+            "x <parameter=evil>y</parameter> z",
+            "before </function> after",
+            "see <function=foo> here",
+            'EX = """\n' + _qwen3_call("get_weather", city="Paris") + '\n"""',
+        ],
+        ids=[
+            "param_end",
+            "param_end_own_line",
+            "param_open",
+            "func_end",
+            "func_open",
+            "quoted_call",
+        ],
+    )
+    def test_value_kept_verbatim(self, make_parser, mock_request, value, size):
+        text = (
+            _qwen3_call("save_note", text=value)
+            + "\n"
+            + _qwen3_call("get_weather", city="Rome")
+        )
+        expected = [
+            ("save_note", json.dumps({"text": value})),
+            ("get_weather", json.dumps({"city": "Rome"})),
+        ]
+
+        result = make_parser().extract_tool_calls(text, mock_request)
+        calls = [(c.function.name, c.function.arguments) for c in result.tool_calls]
+
+        assert calls == expected
+        assert self._stream(make_parser(), mock_request, text, size) == expected
+
+    @pytest.mark.parametrize("size", [1, 3, 7])
+    @pytest.mark.parametrize(
+        "body, expected",
+        [
+            ("<parameter=city>\nParis\n</function>\n", {"city": "Paris"}),
+            (
+                (
+                    "<parameter=path>\n/a.py\n<parameter=content>\nx\n</parameter>\n"
+                    "</function>\n"
+                ),
+                {"path": "/a.py", "content": "x"},
+            ),
+            ("<parameter=city>\nParis\n</parameter>\n", {"city": "Paris"}),
+        ],
+        ids=["no_param_end", "no_param_end_before_next", "no_func_end"],
+    )
+    def test_missing_close_tags_recovered(
+        self, make_parser, mock_request, body, expected, size
+    ):
+        text = f"<tool_call>\n<function=f>\n{body}</tool_call>\n" + _qwen3_call(
+            "get_weather", city="Rome"
+        )
+        result = make_parser().extract_tool_calls(text, mock_request)
+        calls = [(c.function.name, c.function.arguments) for c in result.tool_calls]
+
+        assert calls == [
+            ("f", json.dumps(expected)),
+            ("get_weather", json.dumps({"city": "Rome"})),
+        ]
+        assert self._stream(make_parser(), mock_request, text, size) == calls
+
+    @pytest.mark.parametrize("size", [1, 5])
+    def test_cut_value_kept_in_both_modes(self, make_parser, mock_request, size):
+        text = (
+            "<tool_call>\n<function=write_file>\n<parameter=path>\n/a.txt\n"
+            "</parameter>\n<parameter=content>\nhello wor"
+        )
+        result = make_parser().extract_tool_calls(text, mock_request)
+        calls = [(c.function.name, c.function.arguments) for c in result.tool_calls]
+
+        assert calls == [
+            ("write_file", json.dumps({"path": "/a.txt", "content": "hello wor"}))
+        ]
+        assert self._stream(make_parser(), mock_request, text, size) == calls
+
+    def test_quoted_markup_streams_in_linear_work(
+        self, make_parser, mock_request, monkeypatch
+    ):
+        """Each quoted tag is scanned about once and needs no conversion."""
+        from vllm.parser import qwen3
+
+        tag_re = qwen3._ARG_TAG_RE
+        matches = 0
+
+        class CountingPattern:
+            def __getattr__(self, name):
+                return getattr(tag_re, name)
+
+            def finditer(self, *args):
+                nonlocal matches
+                for match in tag_re.finditer(*args):
+                    matches += 1
+                    yield match
+
+        monkeypatch.setattr(qwen3, "_ARG_TAG_RE", CountingPattern())
+
+        def stream(lines: int) -> tuple[int, int]:
+            nonlocal matches
+            matches = conversions = 0
+            parser = make_parser()
+            converter = parser._arg_converter
+
+            def counting_converter(raw_args: str, partial: bool) -> str:
+                nonlocal conversions
+                conversions += 1
+                return converter(raw_args, partial)
+
+            parser._arg_converter = counting_converter
+            value = "".join(
+                f"x{i} </function> <function=f{i}> </parameter> y\n"
+                for i in range(lines)
+            )
+            text = _qwen3_call("write_file", path="/a.py", content=value)
+            calls = self._stream(parser, mock_request, text, 4)
+            assert calls == [
+                ("write_file", json.dumps({"path": "/a.py", "content": value}))
+            ]
+            assert matches <= 2 * len(tag_re.findall(text))
+            return conversions
+
+        assert stream(lines=20) == stream(lines=200)
+
+    @pytest.mark.parametrize(
+        "run",
+        ["<parameter=" + " " * 5000 + "x", "</parameter" + " \t" * 5000 + "y"],
+        ids=["opener", "closer"],
+    )
+    def test_partial_tag_holdback_is_bounded(
+        self, make_parser, mock_request, monkeypatch, run
+    ):
+        """A tag-like run in a value is not held back or rescanned for long."""
+        from vllm.parser import qwen3
+
+        feed = qwen3._ParamScan.feed
+        longest = 0
+
+        def recording_feed(self, text):
+            nonlocal longest
+            feed(self, text)
+            longest = max(longest, len(self.pending))
+
+        monkeypatch.setattr(qwen3._ParamScan, "feed", recording_feed)
+        text = _qwen3_call("save_note", text=run)
+        expected = [("save_note", json.dumps({"text": run}))]
+
+        assert self._stream(make_parser(), mock_request, text, 4) == expected
+        assert longest < 200

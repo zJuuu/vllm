@@ -21,6 +21,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from functools import cached_property
+from typing import Protocol
 
 from vllm.parser.engine.events import EventType
 
@@ -32,6 +33,12 @@ ArgValueExtender = Callable[[str], str | None]
 # candidate, False means a malformed candidate that must fall back to content,
 # and None means the output is not a tool-call candidate.
 CompleteToolCallValidator = Callable[[str], bool | None]
+
+
+class ToolArgsChecker(Protocol):
+    def feed(self, text: str) -> None: ...
+
+    def allows(self, terminal: str) -> bool: ...
 
 
 class ParserState(Enum):
@@ -118,6 +125,11 @@ class ParserEngineConfig:
     # before a terminal matched by token ID, so a truncated value may end in
     # a terminal prefix. Requires ``arg_converter`` and ``stream_arg_deltas``.
     arg_value_extender: Callable[[str], ArgValueExtender | None] | None = None
+
+    # Builds a checker for each call's arguments. It is fed the raw argument
+    # text as it arrives; a terminal with a transition out of TOOL_ARGS that
+    # it does not allow stays argument text, e.g. markup quoted in a value.
+    tool_args_checker: Callable[[], ToolArgsChecker] | None = None
 
     # Special tokens exempt from auto-drop but not state-machine terminals.
     preserve_tokens: frozenset[str] = field(default_factory=frozenset)
