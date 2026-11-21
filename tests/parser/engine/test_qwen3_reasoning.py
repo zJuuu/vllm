@@ -784,3 +784,23 @@ class TestThinkingDisabled:
         reasoning, content = p.extract_reasoning("The answer is 42.", None)
         assert reasoning is None
         assert content == "The answer is 42."
+
+
+def test_think_end_quoted_in_argument_kept_non_streamed(mock_tokenizer, mock_request):
+    """The reasoning pass forwards the call, including a quoted `</think>`."""
+    parser = _Qwen3DelegatingParser(mock_tokenizer)
+    text = (
+        "plan\n</think>\n\n<tool_call>\n<function=write_file>\n"
+        "<parameter=content>\nx </think> y\n</parameter>\n</function>\n</tool_call>"
+    )
+
+    reasoning, content, tool_calls = parser.parse(
+        text, mock_request, enable_auto_tools=True
+    )
+
+    assert reasoning == "plan\n"
+    assert not content
+    assert tool_calls is not None
+    assert [(c.name, c.arguments) for c in tool_calls] == [
+        ("write_file", '{"content": "x </think> y"}')
+    ]
