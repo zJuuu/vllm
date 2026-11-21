@@ -1599,6 +1599,9 @@ class TestMarkupInParameterValues:
             "x <parameter=evil>y</parameter> z",
             "before </function> after",
             "see <function=foo> here",
+            "<html>\n</function>",
+            "line\n</tool_call>",
+            "x </parameter>",
             'EX = "<function=f><parameter=a>1</parameter></function>"',
         ],
         ids=[
@@ -1607,6 +1610,9 @@ class TestMarkupInParameterValues:
             "param_open",
             "func_end",
             "func_open",
+            "ends_in_function_end",
+            "ends_in_tool_call_end",
+            "ends_in_param_end",
             "quoted_call",
         ],
     )

@@ -332,7 +332,9 @@ class _ParamScan:
                 if self.nested and self.nested[-1]:
                     self.nested[-1] -= 1
                 else:
+                    # The value closes here, so earlier ends were quoted.
                     self.nested.clear()
+                    self.func_end = self.call_start = self.call_end = -1
                     self._mark("end")
             elif func_start is not None:
                 self.nested.append(0)
@@ -345,6 +347,10 @@ class _ParamScan:
                 self._mark("func_end")
             self._append(match.group(0))
         elif self.name is not None:
+            if param_end is not None:
+                # Only whitespace followed the earlier `</parameter>`.
+                self.end = self.length
+                self.end_char = self.last_char
             self._append(match.group(0))
         self.last_char = ">" if match.group(0).endswith(">") else "="
 
