@@ -8,8 +8,8 @@ import inspect
 import itertools
 import weakref
 from collections import defaultdict, deque
-from collections.abc import Sequence
-from functools import lru_cache
+from collections.abc import Iterator, Sequence
+from functools import cached_property, lru_cache
 from typing import TYPE_CHECKING, Any, Final, Literal, cast, overload
 
 import jinja2
@@ -18,7 +18,9 @@ import jinja2.meta
 import jinja2.nodes
 import jinja2.parser
 import jinja2.sandbox
+import regex as re
 import torch
+from pydantic import BaseModel
 from typing_extensions import override
 
 from vllm import envs
@@ -1048,6 +1050,36 @@ def replace_vision_chunk_video_placeholder(
     return prompt_raw
 
 
+class _ControlTokenEscaper:
+    """Breaks control-token text with a word joiner (U+2060).
+
+    The joiner is invisible and stops the tokenizer from reading the text as
+    the control token.  A string that ends with the start of a control token
+    gets one too, since the template may join it to the next string.
+    """
+
+    def __init__(self, tokens: set[str]) -> None:
+        by_length = sorted(tokens, key=len, reverse=True)
+        self.pattern = re.compile("|".join(map(re.escape, by_length)) or "(?!)")
+        self.prefixes = {token[:i] for token in tokens for i in range(1, len(token))}
+        self.max_prefix = max(map(len, self.prefixes), default=0)
+
+    def __call__(self, value: Any) -> Any:
+        if isinstance(value, str):
+            value = self.pattern.sub(lambda m: m[0][0] + "\u2060" + m[0][1:], value)
+            for i in range(min(len(value), self.max_prefix), 0, -1):
+                if value[-i:] in self.prefixes:
+                    return value + "\u2060"
+            return value
+        if isinstance(value, BaseModel):
+            value = value.model_dump()
+        if isinstance(value, dict):
+            return {self(key): self(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple, Iterator)):
+            return [self(item) for item in value]
+        return value
+
+
 class HfRenderer(BaseRenderer[HfTokenizer]):
     def __init__(
         self,
@@ -1063,6 +1095,40 @@ class HfRenderer(BaseRenderer[HfTokenizer]):
         self._apply_chat_template_async = make_async(
             safe_apply_chat_template, executor=self._executor
         )
+
+    @cached_property
+    def _escape_control_tokens(self) -> _ControlTokenEscaper:
+        tokenizer = self.get_tokenizer()
+        return _ControlTokenEscaper(
+            {
+                token
+                for token in (
+                    *tokenizer.get_added_vocab(),
+                    *tokenizer.all_special_tokens,
+                )
+                if len(token) > 1 and token[0] in "<[" and token[-1] in ">]"
+            }
+        )
+
+    def _template_inputs(
+        self, conversation: list[ConversationMessage], kwargs: dict[str, Any]
+    ) -> tuple[list[ConversationMessage], dict[str, Any]]:
+        """The conversation and kwargs to render, with control-token text in
+        them escaped under VLLM_ESCAPE_SPECIAL_TOKEN_TEXT.
+
+        That is every string but the roles and the template itself: messages,
+        tools, documents and request kwargs.
+        """
+        if not envs.VLLM_ESCAPE_SPECIAL_TOKEN_TEXT:
+            return conversation, kwargs
+        escape = self._escape_control_tokens
+        messages = [
+            {k: v if k == "role" else escape(v) for k, v in message.items()}
+            for message in conversation
+        ]
+        return cast("list[ConversationMessage]", messages), {
+            k: v if k == "chat_template" else escape(v) for k, v in kwargs.items()
+        }
 
     def _prepare_tokenizer(self, tokenizer: HfTokenizer) -> None:
         # Skip for mock configs
@@ -1174,11 +1240,14 @@ class HfRenderer(BaseRenderer[HfTokenizer]):
                 logger.warning_once(_TOKENIZE_OVERRIDE_WARNING)
             chat_template_kwargs["tokenize"] = True
 
+        template_conversation, template_kwargs = self._template_inputs(
+            conversation, chat_template_kwargs
+        )
         prompt_raw = safe_apply_chat_template(
             model_config,
             tokenizer,
-            conversation,
-            **chat_template_kwargs,
+            template_conversation,
+            **template_kwargs,
         )
 
         # NOTE: use_unified_vision_chunk is currently specific to Kimi-K2.5
@@ -1296,12 +1365,15 @@ class HfRenderer(BaseRenderer[HfTokenizer]):
                 logger.warning_once(_TOKENIZE_OVERRIDE_WARNING)
             chat_template_kwargs["tokenize"] = True
 
+        template_conversation, template_kwargs = self._template_inputs(
+            conversation, chat_template_kwargs
+        )
         prompt_raw = await self._render_with_timeout(
             self._apply_chat_template_async(
                 model_config,
                 tokenizer,
-                conversation,
-                **chat_template_kwargs,
+                template_conversation,
+                **template_kwargs,
             )
         )
 

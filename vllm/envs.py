@@ -264,6 +264,7 @@ if TYPE_CHECKING:
     VLLM_TOOL_PARSE_REGEX_TIMEOUT_SECONDS: int = 1
     VLLM_ENFORCE_STRICT_TOOL_CALLING: bool = True
     VLLM_ANSWER_ONLY_WITHOUT_TOOL_CALLS: bool = False
+    VLLM_ESCAPE_SPECIAL_TOKEN_TEXT: bool = False
     VLLM_BEAM_ALWAYS_CONSTRAIN_OUTPUT: bool = True
     VLLM_MQ_MAX_CHUNK_BYTES_MB: int = 16
     VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: int = 300
@@ -2012,6 +2013,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_ANSWER_ONLY_WITHOUT_TOOL_CALLS": lambda: (
         os.getenv("VLLM_ANSWER_ONLY_WITHOUT_TOOL_CALLS", "False").lower()
         in ("true", "1")
+    ),
+    # Break the text of control tokens (e.g. "<|im_start|>") in user and tool
+    # messages and tool definitions with a word joiner, so a chat template
+    # never tokenizes it as the control token itself.
+    "VLLM_ESCAPE_SPECIAL_TOKEN_TEXT": lambda: (
+        os.getenv("VLLM_ESCAPE_SPECIAL_TOKEN_TEXT", "False").lower() in ("true", "1")
     ),
     # Constrain every `beam` output to its response template's format, also
     # without tool or structured output constraints.
