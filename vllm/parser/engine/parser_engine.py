@@ -35,7 +35,9 @@ from vllm.tool_parsers.utils import (
     coerce_to_schema_type,
     extract_types_from_schema,
     find_tool_name,
-    find_tool_properties,
+    find_tool_parameters,
+    resolve_schema_refs,
+    safe_literal_eval,
 )
 from vllm.v1.token_buffer import rfind_tokens
 
@@ -129,6 +131,8 @@ class ParserEngine(Parser):
     ) -> None:
         self.model_tokenizer = tokenizer
         self._tools = tools
+        self._properties_cache: dict[str, dict] = {}
+        self._properties_tools = tools
         self._stream_state = StreamState(
             tool_call_id_type=(
                 get_tool_call_id_type(model_config)
@@ -303,6 +307,23 @@ class ParserEngine(Parser):
 
     # ── Schema-aware type correction ─────────────────────────────────
 
+    _TYPE_KEYWORDS = ("type", "enum", "const", "anyOf", "oneOf", "allOf", "$ref")
+
+    @staticmethod
+    def _is_untyped(schema: dict) -> bool:
+        return not any(key in schema for key in ParserEngine._TYPE_KEYWORDS)
+
+    @staticmethod
+    def _union_member(schema: dict, key: str) -> dict:
+        """*schema*, or the member of its union that defines *key*."""
+        if key in schema:
+            return schema
+        for choice_field in ("anyOf", "oneOf", "allOf"):
+            for choice in schema.get(choice_field) or ():
+                if isinstance(choice, dict) and key in choice:
+                    return choice
+        return schema
+
     @staticmethod
     def _coerce_value(value: object, schema: dict) -> tuple[object, bool]:
         """Coerce a single value according to its schema.
@@ -310,21 +331,55 @@ class ParserEngine(Parser):
         Returns `(coerced_value, changed)`.
         """
         if isinstance(value, str):
+            if ParserEngine._is_untyped(schema):
+                # Any type is allowed: keep a JSON object or array as one.
+                try:
+                    parsed = json.loads(value)
+                except json.JSONDecodeError:
+                    return value, False
+                if isinstance(parsed, (dict, list)):
+                    return parsed, True
+                return value, False
             types = extract_types_from_schema(schema)
             coerced = coerce_to_schema_type(value, types)
-            if coerced is not value:
-                return coerced, True
-            return value, False
+            if (
+                coerced is value
+                and "string" not in types
+                and ("object" in types or "array" in types)
+            ):
+                # Python literal spelling, e.g. {'a': 1}.
+                try:
+                    coerced = safe_literal_eval(value)
+                    json.dumps(coerced, allow_nan=False)
+                except (ValueError, TypeError, SyntaxError, RecursionError):
+                    return value, False
+                if not isinstance(coerced, (dict, list)):
+                    return value, False
+            if coerced is value:
+                return value, False
+            if (
+                "string" in types
+                and (coerced is None or isinstance(coerced, (bool, int, float)))
+                and json.dumps(coerced) != value
+            ):
+                # A string type keeps text that isn't the scalar's JSON
+                # spelling, e.g. "007".
+                return value, False
+            if isinstance(coerced, (dict, list)):
+                coerced, _ = ParserEngine._coerce_value(coerced, schema)
+            return coerced, True
 
         if isinstance(value, dict):
-            nested_props = schema.get("properties")
+            nested_props = ParserEngine._union_member(schema, "properties").get(
+                "properties"
+            )
             if isinstance(nested_props, dict):
                 _, changed = ParserEngine._coerce_dict(value, nested_props)
                 return value, changed
             return value, False
 
         if isinstance(value, list):
-            items_schema = schema.get("items")
+            items_schema = ParserEngine._union_member(schema, "items").get("items")
             if isinstance(items_schema, dict):
                 changed = False
                 for i, item in enumerate(value):
@@ -444,9 +499,28 @@ class ParserEngine(Parser):
 
         streamable: set[str] = set()
         for key, schema in properties.items():
+            # Untyped values may become JSON; an unresolved `$ref` is unknown.
+            if not isinstance(schema, dict) or "$ref" in schema:
+                continue
+            if ParserEngine._is_untyped(schema):
+                continue
             if set(extract_types_from_schema(schema)) == {"string"}:
                 streamable.add(key)
         return streamable
+
+    def _tool_properties(self, func_name: str) -> dict:
+        """Properties of tool *func_name*, with local `$ref`s resolved."""
+        if self._properties_tools is not self._tools:
+            self._properties_cache.clear()
+            self._properties_tools = self._tools
+        properties = self._properties_cache.get(func_name)
+        if properties is None:
+            parameters = find_tool_parameters(self._tools, func_name)
+            properties = resolve_schema_refs(
+                parameters.get("properties", {}), parameters
+            )
+            self._properties_cache[func_name] = properties
+        return properties
 
     def _fix_arg_types(self, args_json: str, func_name: str) -> str:
         """Correct parameter types using the tool schema.
@@ -465,7 +539,7 @@ class ParserEngine(Parser):
         if not isinstance(args, dict):
             return args_json
 
-        properties = find_tool_properties(self._tools, func_name)
+        properties = self._tool_properties(func_name)
         if not properties:
             return args_json
 
@@ -972,9 +1046,7 @@ class ParserEngine(Parser):
         slot = self._tool_slots[idx]
         slot.name = name
         slot.name_sent = True
-        slot.string_keys = self._streamable_string_keys(
-            find_tool_properties(self._tools, name)
-        )
+        slot.string_keys = self._streamable_string_keys(self._tool_properties(name))
         self._ensure_tool_id(slot, name)
         deltas.append(
             DeltaToolCall(
@@ -1032,7 +1104,7 @@ class ParserEngine(Parser):
                 slot.name = name
                 slot.name_sent = True
                 slot.string_keys = self._streamable_string_keys(
-                    find_tool_properties(self._tools, name)
+                    self._tool_properties(name)
                 )
                 self._ensure_tool_id(slot, name)
                 deltas.append(

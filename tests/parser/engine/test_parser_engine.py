@@ -845,6 +845,84 @@ class TestFixArgTypes:
         parsed = json.loads(result)
         assert parsed["vals"] == [42, 3.14]
 
+    def test_ref_properties_resolved(self):
+        """Pydantic models put nested models behind `$ref`."""
+        tool = ChatCompletionToolsParam(
+            type="function",
+            function=FunctionDefinition(
+                name="f",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "item": {"$ref": "#/$defs/Item"},
+                        "maybe": {
+                            "anyOf": [{"$ref": "#/$defs/Item"}, {"type": "null"}]
+                        },
+                        "items": {"type": "array", "items": {"$ref": "#/$defs/Item"}},
+                    },
+                    "$defs": {
+                        "Item": {
+                            "type": "object",
+                            "properties": {"n": {"type": "integer"}},
+                        }
+                    },
+                },
+            ),
+        )
+        engine = _make_engine(tools=[tool])
+        result = engine._fix_arg_types(
+            json.dumps(
+                {"item": '{"n": 1}', "maybe": '{"n": "2"}', "items": '[{"n": "3"}]'}
+            ),
+            "f",
+        )
+        assert json.loads(result) == {
+            "item": {"n": 1},
+            "maybe": {"n": 2},
+            "items": [{"n": 3}],
+        }
+
+    @pytest.mark.parametrize(
+        "properties, value, expected",
+        [
+            ({"x": {}}, '{"a": 1}', {"a": 1}),
+            ({"x": {}}, "[1, 2]", [1, 2]),
+            ({"x": {}}, "5", "5"),
+            ({"x": {"description": "any"}}, "true", "true"),
+            ({"x": {"type": ["string", "integer"]}}, "007", "007"),
+            ({"x": {"type": ["string", "integer"]}}, "7", 7),
+            ({"x": {"type": ["string", "number"]}}, "1.50", "1.50"),
+            ({"x": {"type": "object"}}, "{'a': True}", {"a": True}),
+            ({"x": {"type": ["object", "string"]}}, "{'a': 1}", "{'a': 1}"),
+        ],
+        ids=[
+            "untyped_object",
+            "untyped_array",
+            "untyped_scalar_stays_string",
+            "description_only_scalar",
+            "string_or_int_leading_zero",
+            "string_or_int_canonical",
+            "string_or_number_trailing_zero",
+            "object_python_literal",
+            "object_or_string_python_literal",
+        ],
+    )
+    def test_untyped_and_union_values(self, properties, value, expected):
+        tool = _make_tool("f", properties)
+        engine = _make_engine(tools=[tool])
+        result = engine._fix_arg_types(json.dumps({"x": value}), "f")
+        assert json.loads(result) == {"x": expected}
+
+    def test_untyped_and_ref_values_do_not_stream_as_strings(self):
+        properties = {
+            "any": {},
+            "ref": {"$ref": "#/$defs/S"},
+            "text": {"type": "string"},
+        }
+        resolved = {**properties, "ref": {"type": "string"}}
+        assert ParserEngine._streamable_string_keys(properties) == {"text"}
+        assert ParserEngine._streamable_string_keys(resolved) == {"ref", "text"}
+
 
 # ── TestBuildExtractedResult ─────────────────────────────────────────
 
